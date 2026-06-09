@@ -1,55 +1,62 @@
 # Arcane Bridge — releases
 
-## What ships
+## Quick start (automated)
 
-| Artifact | Platform | Use |
-|----------|----------|-----|
-| `Arcane-Bridge-*-windows-setup.exe` | Windows (NSIS) | Direct install |
-| `Arcane-Bridge-*-macos.dmg` | macOS | Direct install |
-| `Arcane-Bridge-*-macos.app.tar.gz` | macOS | Piggyback bundle |
-| `Arcane-Bridge-*-linux-amd64.deb` | Linux | Direct install + piggyback |
-
-The tray app bundles `hub/arcane-bridge.mjs` inside the installer. **Node 18+** must still be on the user’s `PATH`.
-
-Linux piggyback (Caster / Guilds / Monitor) extracts the `.deb` to `~/.local/share/arcane-bridge` — no `sudo` required.
-
-## Distribution options (pick what fits)
-
-| Channel | Best for |
-|---------|----------|
-| **[GitHub Releases](https://github.com/OWNER/arcane_bridge/releases)** | Users downloading Bridge directly |
-| **CI workflow artifacts** | Internal testing before tagging |
-| **Piggyback in Caster / Guilds / Monitor** | Auto-install Bridge on first launch |
-| **R2 / updater CDN** *(future)* | Silent auto-updates |
-
-GitHub Releases is an **alternative** — not a replacement for piggyback or a future updater feed.
-
-## Tag and publish (GitHub Release)
+**Ship a new version** (one command — CI builds Win/Mac/Linux + GitHub Release):
 
 ```bash
-git tag bridge-v0.1.0
-git push origin bridge-v0.1.0
+cd arcane_bridge
+./scripts/release.sh patch          
+# or: bash scripts/release.sh patch
+# or: ./scripts/release.sh 0.2.0
+# or: ./scripts/release.sh patch --dry-run
 ```
 
-CI builds **Windows + macOS + Linux**, uploads workflow artifacts, and creates a GitHub Release on tag push.
-
-Manual `workflow_dispatch` → artifacts only, no GitHub Release.
-
-## Local build
+**After CI finishes** — pull Bridge installers into Caster / Guilds / Monitor:
 
 ```bash
-cd hub && npm ci && npm run build
-cd ../backend && cargo tauri build --bundles nsis       # Windows
-cd ../backend && cargo tauri build --bundles app,dmg    # macOS
-cd ../backend && cargo tauri build --bundles deb        # Linux
+./scripts/stage-from-github-release.sh bridge-v0.1.2
+# or omit tag for latest bridge-v* release (uses curl + GitHub API — no gh required)
 ```
 
-## Piggyback install (Caster / Guilds / Monitor)
-
-See [PIGGYBACK.md](PIGGYBACK.md). Stage installers before building other apps:
+**Local test build** (this machine only, no git tag):
 
 ```bash
-bash arcane_bridge/scripts/stage-installers-for-apps.sh
+./scripts/build-local.sh
 ```
 
-Or download assets from a GitHub Release into each app’s `resources/bridge/`.
+That’s it for the normal flow.
+
+---
+
+## What CI ships
+
+| Artifact | Platform |
+|----------|----------|
+| `Arcane-Bridge-*-windows-setup.exe` | Windows |
+| `Arcane-Bridge-*-macos.dmg` | macOS |
+| `Arcane-Bridge-*-macos.app.tar.gz` | macOS piggyback |
+| `Arcane-Bridge-*-linux-amd64.deb` | Linux |
+
+Requires **Node 18+** on user `PATH`.
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/release.sh` | bump version, commit, tag `bridge-v*`, push → triggers CI |
+| `scripts/stage-from-github-release.sh` | `gh release download` → app `resources/bridge/` |
+| `scripts/build-local.sh` | hub + tray build on current OS only |
+| `scripts/sync-version.mjs` | write version into `tauri.conf.json` + hub `package.json` |
+
+## Requirements
+
+- `git`, `node`, `curl`
+- `gh` optional (staging works without it)
+- `GITHUB_REPO=owner/repo` if git remote isn’t the Bridge repo
+- Tag format: `bridge-v0.1.2`
+- CI syncs version from tag before `cargo tauri build`
+
+## Manual / legacy
+
+Local per-OS builds and `stage-installers-for-apps.sh` (from local `target/`) still work — see git history or `PIGGYBACK.md`.

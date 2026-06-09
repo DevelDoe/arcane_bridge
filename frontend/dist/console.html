@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bridge Console</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14161a;
+        --panel: #1c2028;
+        --border: #2a3140;
+        --text: #e8ecf4;
+        --muted: #8b95a8;
+        --accent: #5b8cff;
+        --ok: #3ecf8e;
+        --warn: #f0b429;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      main {
+        padding: 16px;
+        display: grid;
+        gap: 12px;
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      header p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid var(--border);
+        background: var(--panel);
+      }
+
+      .badge::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--warn);
+      }
+
+      .badge.online::before {
+        background: var(--ok);
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+      }
+
+      .panel h2 {
+        margin: 0 0 8px;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .apps {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .chip {
+        padding: 4px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        font-size: 12px;
+      }
+
+      .chip.on {
+        border-color: color-mix(in srgb, var(--ok) 50%, var(--border));
+        color: var(--ok);
+      }
+
+      .chip.off {
+        color: var(--muted);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 6px 4px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      tr:last-child td {
+        border-bottom: none;
+      }
+
+      .empty {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      #activity {
+        margin: 0;
+        padding-left: 18px;
+        max-height: 160px;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+      }
+
+      #activity li {
+        margin-bottom: 4px;
+        color: #c5d0e6;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Bridge Console</h1>
+        <p id="subtitle">Arcane Bridge</p>
+      </header>
+
+      <div class="status-row">
+        <span id="status-badge" class="badge">Waiting</span>
+        <span id="endpoint" class="empty">—</span>
+      </div>
+
+      <section class="panel">
+        <h2>Apps</h2>
+        <div class="apps">
+          <span id="app-monitor" class="chip off">Monitor</span>
+          <span id="app-caster" class="chip off">Caster</span>
+          <span id="app-guilds" class="chip off">Guilds</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Connections</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Role</th>
+              <th>Client</th>
+              <th>Connected</th>
+            </tr>
+          </thead>
+          <tbody id="clients-body">
+            <tr>
+              <td colspan="3" class="empty">No clients connected</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <h2>Activity</h2>
+        <ol id="activity"></ol>
+      </section>
+    </main>
+
+    <script>
+      const ROLE_LABELS = {
+        monitor: "Monitor",
+        caster: "Caster",
+        guilds: "Guilds",
+        bridge_app: "Bridge",
+        unknown: "Client",
+      };
+
+      function roleLabel(role) {
+        return ROLE_LABELS[role] || ROLE_LABELS.unknown;
+      }
+
+      function formatConnectedAt(ms) {
+        if (!ms) return "—";
+        try {
+          return new Date(ms).toLocaleTimeString();
+        } catch {
+          return "—";
+        }
+      }
+
+      function setAppChip(id, on) {
+        const el = document.getElementById(id);
+        el.classList.toggle("on", on);
+        el.classList.toggle("off", !on);
+      }
+
+      function render(data) {
+        const subtitle = document.getElementById("subtitle");
+        subtitle.textContent = `Arcane Bridge v${data.version || "?"}`;
+
+        const badge = document.getElementById("status-badge");
+        badge.textContent = data.listening ? "Online" : "Waiting";
+        badge.classList.toggle("online", !!data.listening);
+
+        const endpoint = document.getElementById("endpoint");
+        endpoint.textContent = data.listening
+          ? `${data.host}:${data.port}`
+          : "Hub not reachable";
+
+        const apps = data.apps || {};
+        setAppChip("app-monitor", !!apps.monitor);
+        setAppChip("app-caster", !!apps.caster);
+        setAppChip("app-guilds", !!apps.guilds);
+
+        const body = document.getElementById("clients-body");
+        const clients = Array.isArray(data.clients) ? data.clients : [];
+        body.innerHTML = "";
+        if (clients.length === 0) {
+          body.innerHTML =
+            '<tr><td colspan="3" class="empty">No clients connected</td></tr>';
+        } else {
+          for (const client of clients) {
+            const row = document.createElement("tr");
+            row.innerHTML = `
+              <td>${roleLabel(client.role)}</td>
+              <td>${client.id || "—"}</td>
+              <td>${formatConnectedAt(client.connectedAt)}</td>
+            `;
+            body.appendChild(row);
+          }
+        }
+
+        const activity = document.getElementById("activity");
+        activity.innerHTML = "";
+        const lines = Array.isArray(data.activity) ? data.activity : [];
+        if (lines.length === 0) {
+          const li = document.createElement("li");
+          li.textContent = "No activity yet";
+          activity.appendChild(li);
+        } else {
+          for (const line of lines) {
+            const li = document.createElement("li");
+            li.textContent = line;
+            activity.appendChild(li);
+          }
+        }
+      }
+
+      async function listenForUpdates() {
+        const tauri = window.__TAURI__;
+        if (!tauri?.event?.listen) {
+          document.getElementById("activity").innerHTML =
+            "<li>Could not attach to bridge events</li>";
+          return;
+        }
+        await tauri.event.listen("bridge-console-update", (event) => {
+          render(event.payload || {});
+        });
+      }
+
+      listenForUpdates();
+    </script>
+  </body>
+</html>

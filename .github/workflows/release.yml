@@ -107,6 +107,12 @@ jobs:
           echo "Channel: ${CHANNEL}"
           echo "Version: ${VERSION}"
 
+      - name: Sync app version from tag
+        run: node scripts/sync-version.mjs "${{ steps.meta.outputs.version }}"
+
+      - name: Verify frontend web assets
+        run: test -f frontend/dist/index.html && test -f frontend/dist/console.html
+
       - name: Build Tauri app (Windows NSIS)
         if: matrix.platform == 'windows'
         run: cargo tauri build --bundles nsis

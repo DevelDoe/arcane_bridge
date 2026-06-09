@@ -7,7 +7,7 @@ hub/node_modules/
 hub/dist/
 
 # Staged installers (copied into other apps before release builds)
-dist/
+/dist/
 
 # OS / editor
 .DS_Store

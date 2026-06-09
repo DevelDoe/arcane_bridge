@@ -52,4 +52,9 @@ See [hub/BUILD.md](hub/BUILD.md).
 
 ## Release
 
-Tag `bridge-v0.1.0` → CI builds **Windows, macOS, and Linux** installers and publishes a **GitHub Release**. Piggyback bundling and a future updater CDN remain separate options. See [docs/RELEASE.md](docs/RELEASE.md).
+```bash
+./scripts/release.sh patch              # tag + push → CI builds all platforms
+./scripts/stage-from-github-release.sh  # after CI: piggyback into other apps
+```
+
+See [docs/RELEASE.md](docs/RELEASE.md).
