@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Sync version into tauri.conf.json (+ hub package.json) before a release build.
+ * Sync version into tauri.conf.json before a release build.
  *
  * Usage:
  *   node scripts/sync-version.mjs 0.1.2
@@ -30,9 +30,4 @@ const tauri = JSON.parse(fs.readFileSync(tauriPath, "utf8"));
 tauri.version = version;
 fs.writeFileSync(tauriPath, `${JSON.stringify(tauri, null, 2)}\n`);
 
-const hubPkgPath = path.join(root, "hub", "package.json");
-const hubPkg = JSON.parse(fs.readFileSync(hubPkgPath, "utf8"));
-hubPkg.version = version;
-fs.writeFileSync(hubPkgPath, `${JSON.stringify(hubPkg, null, 2)}\n`);
-
-console.log(`[sync-version] set version ${version} in tauri.conf.json and hub/package.json`);
+console.log(`[sync-version] set version ${version} in tauri.conf.json`);

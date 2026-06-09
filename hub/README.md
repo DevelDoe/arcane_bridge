@@ -1,10 +1,14 @@
-# Hub (Node)
+# Hub (Node) — legacy reference
 
-TCP/JSONL server on `127.0.0.1:47991`. Started by the Arcane Bridge tray app (`../backend/`).
-
-Do not run as a separate product — use the Arcane Bridge tray app (`../backend`) unless debugging:
+The production hub is **in-process Rust** inside `../backend/`. This Node package is kept for protocol reference and local debugging only — it is **not** bundled in releases.
 
 ```bash
 npm install
-npm start
+npm start   # only if you need to compare against the old Node hub
+```
+
+TCP/JSONL on `127.0.0.1:47991`. Use the Arcane Bridge tray app for normal development:
+
+```bash
+cd ../backend && cargo tauri dev
 ```

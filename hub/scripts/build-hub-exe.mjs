@@ -53,9 +53,65 @@ if (!fs.existsSync(built)) {
     throw new Error(`pkg did not produce ${built}`);
 }
 
-if (process.platform !== "win32") {
+if (process.platform === "win32") {
+    hideWindowsConsoleExe(built);
+} else {
     fs.chmodSync(built, 0o755);
 }
 
 const mb = Math.round(fs.statSync(built).size / 1024 / 1024);
 console.log(`[hub-exe] ready: ${built} (${mb} MB)`);
+
+function hideWindowsConsoleExe(exePath) {
+    const editbin = findEditbin();
+    if (!editbin) {
+        throw new Error(
+            "[hub-exe] editbin not found — install Visual Studio Build Tools so arcane-bridge-hub.exe is built without a console window",
+        );
+    }
+
+    console.log(`[hub-exe] hiding console window for ${path.basename(exePath)}`);
+    const patch = spawnSync(
+        editbin,
+        ["/SUBSYSTEM:WINDOWS", "/ENTRY:mainCRTStartup", exePath],
+        { stdio: "inherit" },
+    );
+    if (patch.error) {
+        throw patch.error;
+    }
+    if (patch.status !== 0) {
+        throw new Error(`editbin exited with code ${patch.status ?? "unknown"}`);
+    }
+}
+
+function findEditbin() {
+    const onPath = spawnSync("where", ["editbin"], { encoding: "utf8", shell: true });
+    if (onPath.status === 0) {
+        const hit = onPath.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+        if (hit && fs.existsSync(hit)) {
+            return hit;
+        }
+    }
+
+    const programFiles = process.env["ProgramFiles(x86)"] || process.env.ProgramFiles;
+    if (!programFiles) {
+        return null;
+    }
+
+    const vswhere = path.join(programFiles, "Microsoft Visual Studio", "Installer", "vswhere.exe");
+    if (!fs.existsSync(vswhere)) {
+        return null;
+    }
+
+    const locate = spawnSync(
+        vswhere,
+        ["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-find", "**/editbin.exe"],
+        { encoding: "utf8" },
+    );
+    if (locate.status !== 0) {
+        return null;
+    }
+
+    const found = locate.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    return found && fs.existsSync(found) ? found : null;
+}

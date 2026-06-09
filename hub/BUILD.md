@@ -1,30 +1,25 @@
-# Hub — build & deploy
+# Hub (Node) — legacy reference
 
-Bundled inside `arcane_bridge`. Dev uses `src/index.js`. Release builds run `npm ci && npm run build:bundle` once before `cargo tauri build`, which verifies the bundle and copies `dist/hub-bundle/` into the Tauri app (`hub/`).
+Production Bridge runs the TCP hub **in-process** inside `../backend/` (Rust). This Node package is kept for protocol reference and local debugging only.
 
-## Dev
+## Normal dev
 
-Start the tray app (`../backend` → `cargo tauri dev`) or run hub standalone:
+```bash
+cd ../backend && cargo tauri dev
+```
+
+## Debug Node hub (optional)
 
 ```bash
 npm install
 npm start
 ```
 
-## Build single file
+## Build standalone bundle (not shipped in releases)
 
 ```bash
-npm install
-npm run build
-# → dist/arcane-bridge.cjs
-```
-
-## Build release executable (standalone hub)
-
-```bash
-npm install
-npm run build:bundle
-# → dist/hub-bundle/arcane-bridge-hub (or arcane-bridge-hub.exe on Windows)
+npm run build        # dist/arcane-bridge.cjs
+npm run build:bundle # dist/hub-bundle/ — legacy, not used by Tauri builds
 ```
 
 ## Stale port

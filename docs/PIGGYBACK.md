@@ -21,9 +21,7 @@ Then copy into all apps:
 
 ```bash
 # Option A: local build + stage script
-cd arcane_bridge/hub && npm ci && npm run build:bundle
-cd ../backend && cargo tauri build --bundles app,dmg   # macOS
-# or --bundles nsis (Windows) / deb (Linux)
+cd arcane_bridge/backend && cargo tauri build
 bash arcane_bridge/scripts/stage-installers-for-apps.sh
 
 # Option B: place GitHub Release assets manually into each app's resources/bridge/

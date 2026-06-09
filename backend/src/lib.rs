@@ -1,13 +1,16 @@
 mod activity_log;
 mod bridge_admin;
 mod console_window;
-mod hub_process;
+mod hub;
+mod hub_runtime;
 mod shell_visibility;
 
-use bridge_admin::{run_admin_subscribe_loop, BridgeStatus};
+use bridge_admin::BridgeStatus;
 use console_window::{emit_console_update, open_console, ConsoleState, SharedConsoleState};
-use hub_process::{acquire_singleton_lock, bridge_host_from_env, bridge_port_from_env, ensure_hub_running, stop_spawned_hub};
+use hub_runtime::{acquire_singleton_lock, bridge_host_from_env, bridge_port_from_env, start_in_process_hub};
 use shell_visibility::apply_tray_only_shell;
+
+pub use shell_visibility::prepare_windows_tray_process;
 use std::sync::{mpsc::Receiver, Arc, Mutex};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -108,31 +111,29 @@ pub fn run() {
         }
     };
 
-    let mut app = tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_dock_visibility(false);
 
-            hub_process::init_bundled_hub_paths(app.handle());
-
-            if let Err(e) = ensure_hub_running() {
+            let hub_rx = start_in_process_hub().map_err(|e| {
                 eprintln!("[arcane-bridge] hub start: {e}");
-            }
+                std::io::Error::other(e)
+            })?;
 
-            let host = bridge_host_from_env();
-            let port = bridge_port_from_env();
-            let mut initial = BridgeStatus::default();
-            initial.listening = hub_process::probe_bridge_port(&host, port);
+            let initial = BridgeStatus {
+                listening: true,
+                host: bridge_host_from_env(),
+                port: bridge_port_from_env(),
+                ..Default::default()
+            };
 
             let version = app.package_info().version.to_string();
             let console_state: SharedConsoleState =
                 Arc::new(Mutex::new(ConsoleState::new(version, initial.clone())));
             app.manage(console_state.clone());
 
-            let (tx, rx) = std::sync::mpsc::channel();
-            let admin_app = app.handle().clone();
-            std::thread::spawn(move || run_admin_subscribe_loop(tx));
-            spawn_status_listener(admin_app, rx, console_state.clone());
+            spawn_status_listener(app.handle().clone(), hub_rx, console_state.clone());
 
             let menu = build_tray_menu(app.handle(), &initial)?;
             let icon = app.default_window_icon().cloned().ok_or_else(|| {
@@ -158,7 +159,6 @@ pub fn run() {
                             });
                         }
                         "quit" => {
-                            stop_spawned_hub();
                             app.exit(0);
                         }
                         _ => {}
@@ -173,10 +173,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building arcane bridge tray app");
 
-    #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
     app.run(|app_handle, _event| {
-        apply_tray_only_shell(&app_handle);
+        apply_tray_only_shell(app_handle);
     });
 }

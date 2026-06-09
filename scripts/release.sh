@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# One-command Bridge release: bump version → commit → tag → push → CI builds all platforms.
+# One-command Bridge release:
+#   commit all bridge changes → bump version → tag → push → CI builds all platforms.
 #
 # Usage:
-#   ./scripts/release.sh 0.1.3
 #   ./scripts/release.sh patch
-#   ./scripts/release.sh minor
-#   ./scripts/release.sh 0.1.3 --dry-run
-#   ./scripts/release.sh 0.1.3 --no-push
+#   ./scripts/release.sh 0.2.1
+#   ./scripts/release.sh patch --dry-run
+#   ./scripts/release.sh patch --no-push
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,7 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=true ;;
     --no-push) NO_PUSH=true ;;
     -h|--help)
-      sed -n '2,12p' "$0"
+      sed -n '2,10p' "$0"
       exit 0
       ;;
     *)
@@ -82,13 +82,21 @@ TAG="bridge-v${VERSION}"
 BRANCH="$(git -C "${GIT_ROOT}" branch --show-current)"
 
 if [[ -f "${GIT_ROOT}/arcane_bridge/backend/tauri.conf.json" ]]; then
-  FILES=(arcane_bridge/backend/tauri.conf.json arcane_bridge/hub/package.json)
+  BRIDGE_PREFIX="arcane_bridge"
 elif [[ -f "${GIT_ROOT}/backend/tauri.conf.json" ]]; then
-  FILES=(backend/tauri.conf.json hub/package.json)
+  BRIDGE_PREFIX="."
 else
   echo "Cannot find tauri.conf.json under git root" >&2
   exit 1
 fi
+
+bridge_path_args() {
+  if [[ "${BRIDGE_PREFIX}" == "." ]]; then
+    echo "."
+  else
+    echo "${BRIDGE_PREFIX}"
+  fi
+}
 
 run() {
   if [[ "${DRY_RUN}" == true ]]; then
@@ -102,18 +110,19 @@ echo "==> Arcane Bridge release ${VERSION} (tag ${TAG})"
 echo "    git root: ${GIT_ROOT}"
 echo "    branch:   ${BRANCH}"
 
+BRIDGE_PATH="$(bridge_path_args)"
+
 run node "${SCRIPT_DIR}/sync-version.mjs" "${VERSION}"
 
-for f in "${FILES[@]}"; do
-  if [[ -n "${f}" && -f "${GIT_ROOT}/${f}" ]]; then
-    run git -C "${GIT_ROOT}" add "${f}"
-  fi
-done
+echo "==> Staging all changes under ${BRIDGE_PATH}"
+run git -C "${GIT_ROOT}" add -A -- "${BRIDGE_PATH}"
 
-if git -C "${GIT_ROOT}" diff --cached --quiet; then
-  echo "No version file changes to commit (already ${VERSION}?)"
+if git -C "${GIT_ROOT}" diff --cached --quiet -- "${BRIDGE_PATH}"; then
+  echo "==> Nothing new to commit under ${BRIDGE_PATH} (already at ${VERSION}?)"
 else
-  run git -C "${GIT_ROOT}" commit -m "bridge: release ${VERSION}"
+  COMMIT_MSG="bridge: release ${VERSION}"
+  echo "==> Commit: ${COMMIT_MSG}"
+  run git -C "${GIT_ROOT}" commit -m "${COMMIT_MSG}" -- "${BRIDGE_PATH}"
 fi
 
 if git -C "${GIT_ROOT}" rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
@@ -135,7 +144,7 @@ run git -C "${GIT_ROOT}" push origin "${BRANCH}"
 run git -C "${GIT_ROOT}" push origin "${TAG}"
 
 echo ""
-echo "✓ Pushed ${TAG}. GitHub Actions will build Windows + macOS + Linux and publish a Release."
+echo "✓ Pushed ${TAG}. GitHub Actions will build Windows + macOS + Linux."
 echo ""
-echo "When CI finishes, stage installers into other apps:"
+echo "When CI finishes:"
 echo "  ${SCRIPT_DIR}/stage-from-github-release.sh ${TAG}"

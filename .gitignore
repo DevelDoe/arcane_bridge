@@ -1,6 +1,7 @@
 # Rust / Tauri
 backend/target/
 backend/gen/
+bootstrap/target/
 
 # Hub (Node)
 hub/node_modules/

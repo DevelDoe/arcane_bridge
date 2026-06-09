@@ -16,6 +16,7 @@ const BIN_NAME: &str = "arcane-bridge";
 static BOOTSTRAP_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 enum InstallOutcome {
+    #[cfg(not(target_os = "macos"))]
     Complete,
     NeedsUserInstall,
 }
@@ -82,24 +83,28 @@ pub fn ensure_bridge_running(resource_dir: Option<&Path>) -> Result<(), String> 
             );
             return Ok(());
         }
+        #[cfg(not(target_os = "macos"))]
         InstallOutcome::Complete => {}
     }
 
-    if installed_binary().is_none() {
+    #[cfg(not(target_os = "macos"))]
+    {
+        if installed_binary().is_none() {
+            return Err(format!(
+                "install finished but {PRODUCT_NAME} binary was not found"
+            ));
+        }
+
+        launch_bridge()?;
+        if wait_for_hub(&host, port, Duration::from_secs(60)) {
+            eprintln!("[bridge-bootstrap] {PRODUCT_NAME} hub is up on {host}:{port}");
+            return Ok(());
+        }
+
         return Err(format!(
-            "install finished but {PRODUCT_NAME} binary was not found"
+            "{PRODUCT_NAME} installed but hub not listening on {host}:{port}"
         ));
     }
-
-    launch_bridge()?;
-    if wait_for_hub(&host, port, Duration::from_secs(60)) {
-        eprintln!("[bridge-bootstrap] {PRODUCT_NAME} hub is up on {host}:{port}");
-        return Ok(());
-    }
-
-    Err(format!(
-        "{PRODUCT_NAME} installed but hub not listening on {host}:{port}"
-    ))
 }
 
 fn wait_for_hub(host: &str, port: u16, timeout: Duration) -> bool {
@@ -365,11 +370,17 @@ fn launch_bridge() -> Result<(), String> {
         let bin = installed_binary().ok_or_else(|| {
             format!("{PRODUCT_NAME} binary not found after install")
         })?;
-        Command::new(&bin)
-            .stdin(std::process::Stdio::null())
+        let mut cmd = Command::new(&bin);
+        cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.spawn()
             .map_err(|e| format!("launch {}: {e}", bin.display()))?;
         Ok(())
     }

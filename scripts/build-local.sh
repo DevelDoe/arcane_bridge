@@ -13,11 +13,8 @@ if [[ -n "${1:-}" ]]; then
   node "${SCRIPT_DIR}/sync-version.mjs" "$1"
 fi
 
-echo "==> Building hub executable..."
-(cd "${BRIDGE_ROOT}/hub" && npm ci && npm run build:bundle)
-
 OS="$(uname -s)"
-echo "==> Building tray app (${OS})..."
+echo "==> Building Arcane Bridge (${OS})..."
 cd "${BRIDGE_ROOT}/backend"
 
 case "${OS}" in

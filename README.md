@@ -1,16 +1,16 @@
 # Arcane Bridge
 
-Menu bar app + localhost hub (`127.0.0.1:47991`). One install — tray starts the hub and shows connected apps.
+System tray app with an in-process localhost hub (`127.0.0.1:47991`). One executable — no separate hub process.
 
-Monitor is **not** required. Caster and Guilds connect as clients.
+Monitor is **not** required. Caster and Guilds connect as TCP clients.
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `backend/` | Tauri tray app (Rust) |
-| `hub/` | Node TCP hub (spawned by tray) |
-| `frontend/dist/` | Minimal shell (tray-only) |
+| `backend/` | Tauri tray app + in-process Rust hub |
+| `frontend/dist/` | Bridge Console UI (optional window) |
+| `hub/` | Legacy Node hub (reference only — not shipped) |
 
 ## Dev
 
@@ -19,20 +19,12 @@ cd arcane_bridge/backend
 cargo tauri dev
 ```
 
-Dev requires **Node 18+** on `PATH`. Production builds ship a **standalone hub executable** (`hub/arcane-bridge-hub` / `hub/arcane-bridge-hub.exe`) — end users do not need Node installed.
-
-Hub only (debug):
-
-```bash
-cd arcane_bridge/hub
-npm install
-npm start
-```
+No Node required for dev or release builds.
 
 ## Startup order
 
 1. **Arcane Bridge** (this app)
-2. Monitor, Caster, Guilds — any order after hub is up
+2. Monitor, Caster, Guilds — any order; clients retry until hub is up
 
 ## Stale port
 
@@ -41,14 +33,7 @@ lsof -iTCP:47991 -sTCP:LISTEN
 kill $(lsof -ti tcp:47991)
 ```
 
-## Build hub executable
-
-```bash
-cd hub && npm ci && npm run build:bundle
-# → hub/dist/hub-bundle/arcane-bridge-hub (or .exe on Windows)
-```
-
-See [hub/BUILD.md](hub/BUILD.md).
+On Windows: quit Bridge from the tray, or end any leftover `arcane-bridge-hub.exe` from old installs.
 
 ## Release
 

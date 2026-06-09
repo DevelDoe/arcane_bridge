@@ -41,8 +41,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: hub/package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -78,10 +76,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-
-      - name: Build hub executable (standalone, once per platform)
-        run: npm ci && npm run build:bundle
-        working-directory: hub
 
       - name: Resolve release metadata
         id: meta
@@ -221,7 +215,7 @@ jobs:
             | **macOS (piggyback)** | `Arcane-Bridge-*-macos.app.tar.gz` |
             | **Linux** | `Arcane-Bridge-*-linux-amd64.deb` |
 
-            Hub is a **standalone executable** — end users do not need Node installed.
+            Hub runs **inside the Arcane Bridge tray app** — one process, no separate hub executable.
 
             Linux piggyback apps extract the `.deb` to `~/.local/share/arcane-bridge` (no sudo).
 
