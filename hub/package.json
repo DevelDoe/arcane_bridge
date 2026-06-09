@@ -1,6 +1,6 @@
 {
   "name": "arcane-bridge",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Central localhost JSONL bridge hub for Arcane apps (Monitor, Guilds, Caster)",
   "private": true,
   "type": "module",
