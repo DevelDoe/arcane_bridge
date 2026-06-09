@@ -38,7 +38,7 @@ On Windows: quit Bridge from the tray, or end any leftover `arcane-bridge-hub.ex
 ## Release
 
 ```bash
-./scripts/release.sh patch              # tag + push → CI builds all platforms
+./scripts/release.sh                    # tag + push → CI builds all platforms
 ./scripts/stage-from-github-release.sh  # after CI: piggyback into other apps
 ```
 
