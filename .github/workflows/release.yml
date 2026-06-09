@@ -79,8 +79,8 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Build hub bundle
-        run: npm ci && npm run build
+      - name: Build hub executable (standalone, once per platform)
+        run: npm ci && npm run build:bundle
         working-directory: hub
 
       - name: Resolve release metadata
@@ -221,7 +221,7 @@ jobs:
             | **macOS (piggyback)** | `Arcane-Bridge-*-macos.app.tar.gz` |
             | **Linux** | `Arcane-Bridge-*-linux-amd64.deb` |
 
-            Requires **Node 18+** on `PATH`.
+            Hub is a **standalone executable** — end users do not need Node installed.
 
             Linux piggyback apps extract the `.deb` to `~/.local/share/arcane-bridge` (no sudo).
 

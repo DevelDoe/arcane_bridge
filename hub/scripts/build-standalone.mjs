@@ -7,7 +7,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 const outDir = path.join(root, "dist");
-const outfile = path.join(outDir, "arcane-bridge.mjs");
+const outfile = path.join(outDir, "arcane-bridge.cjs");
 
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -16,11 +16,8 @@ await esbuild.build({
     bundle: true,
     platform: "node",
     target: "node18",
-    format: "esm",
+    format: "cjs",
     outfile,
-    banner: {
-        js: "#!/usr/bin/env node",
-    },
 });
 
 try {

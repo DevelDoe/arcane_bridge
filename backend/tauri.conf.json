@@ -5,7 +5,7 @@
   "identifier": "com.arcanemonitor.bridge",
   "build": {
     "beforeBuildCommand": {
-      "script": "npm run build:bundle",
+      "script": "npm run verify:bundle",
       "cwd": "../hub"
     },
     "frontendDist": "../frontend/dist"

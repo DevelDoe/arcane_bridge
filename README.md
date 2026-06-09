@@ -19,7 +19,7 @@ cd arcane_bridge/backend
 cargo tauri dev
 ```
 
-Dev requires **Node 18+** on `PATH`. Production builds bundle `hub/arcane-bridge.mjs` inside the app (still needs Node on `PATH`).
+Dev requires **Node 18+** on `PATH`. Production builds ship a **standalone hub executable** (`hub/arcane-bridge-hub` / `hub/arcane-bridge-hub.exe`) — end users do not need Node installed.
 
 Hub only (debug):
 
@@ -41,11 +41,11 @@ lsof -iTCP:47991 -sTCP:LISTEN
 kill $(lsof -ti tcp:47991)
 ```
 
-## Build hub bundle
+## Build hub executable
 
 ```bash
-cd hub && npm install && npm run build
-# → hub/dist/arcane-bridge.mjs
+cd hub && npm ci && npm run build:bundle
+# → hub/dist/hub-bundle/arcane-bridge-hub (or .exe on Windows)
 ```
 
 See [hub/BUILD.md](hub/BUILD.md).

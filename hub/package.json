@@ -13,6 +13,7 @@
     "dev": "node --watch src/index.js",
     "build": "node scripts/build-standalone.mjs",
     "build:bundle": "npm run build && node scripts/build-hub-exe.mjs",
+    "verify:bundle": "node scripts/verify-hub-bundle.mjs",
     "start:dist": "node dist/arcane-bridge.cjs"
   },
   "engines": {

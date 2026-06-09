@@ -38,7 +38,7 @@ That’s it for the normal flow.
 | `Arcane-Bridge-*-macos.app.tar.gz` | macOS piggyback |
 | `Arcane-Bridge-*-linux-amd64.deb` | Linux |
 
-Requires **Node 18+** on user `PATH`.
+Ships a **standalone hub executable** — end users do not need Node on `PATH`.
 
 ## Scripts
 

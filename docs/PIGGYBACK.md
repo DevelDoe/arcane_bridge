@@ -21,7 +21,7 @@ Then copy into all apps:
 
 ```bash
 # Option A: local build + stage script
-cd arcane_bridge/hub && npm ci && npm run build
+cd arcane_bridge/hub && npm ci && npm run build:bundle
 cd ../backend && cargo tauri build --bundles app,dmg   # macOS
 # or --bundles nsis (Windows) / deb (Linux)
 bash arcane_bridge/scripts/stage-installers-for-apps.sh
@@ -33,7 +33,7 @@ bash arcane_bridge/scripts/stage-installers-for-apps.sh
 
 | OS | Bundled file | Install target |
 |----|--------------|----------------|
-| **macOS** | `Arcane-Bridge-*-macos.app.tar.gz` | `/Applications` |
+| **macOS** | `Arcane-Bridge-*-macos.dmg` or `.app.tar.gz` | user installs from DMG |
 | **Windows** | `Arcane-Bridge-*-windows-setup.exe` | silent `/S` |
 | **Linux** | `Arcane-Bridge-*-linux-amd64.deb` | `~/.local/share/arcane-bridge` (no sudo) |
 

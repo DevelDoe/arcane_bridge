@@ -13,7 +13,8 @@ const DEFAULT_BRIDGE_PORT: u16 = 47991;
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
 const SINGLETON_PORT: u16 = 47990;
 const CONNECT_TIMEOUT_MS: u64 = 800;
-const BUNDLED_HUB_REL: &str = "hub/arcane-bridge.mjs";
+const BUNDLED_HUB_DIR: &str = "hub";
+const HUB_EXE_NAMES: &[&str] = &["arcane-bridge-hub", "arcane-bridge-hub.exe"];
 
 static HUB_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 static BUNDLED_HUB_ENTRY: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -52,19 +53,26 @@ pub fn acquire_singleton_lock() -> Result<std::net::TcpListener, String> {
         .map_err(|e| format!("another Arcane Bridge tray is running ({e})"))
 }
 
+fn find_hub_exe_in(dir: &Path) -> Option<PathBuf> {
+    for name in HUB_EXE_NAMES {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Resolve bundled hub path from Tauri resource dir (production builds).
 pub fn init_bundled_hub_paths(app: &tauri::AppHandle) {
     let mut found = None;
 
     if let Ok(dir) = app.path().resource_dir() {
-        let candidate = dir.join(BUNDLED_HUB_REL);
-        if candidate.is_file() {
-            found = Some(candidate);
-        }
+        found = find_hub_exe_in(&dir.join(BUNDLED_HUB_DIR));
     }
 
     if found.is_none() {
-        found = resource_hub_entry_near_exe();
+        found = resource_hub_exe_near_exe();
     }
 
     if let Some(path) = found {
@@ -74,7 +82,7 @@ pub fn init_bundled_hub_paths(app: &tauri::AppHandle) {
     }
 }
 
-fn resource_hub_entry_near_exe() -> Option<PathBuf> {
+fn resource_hub_exe_near_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
 
     #[cfg(target_os = "macos")]
@@ -83,23 +91,30 @@ fn resource_hub_entry_near_exe() -> Option<PathBuf> {
             .parent()?
             .parent()?
             .join("Resources")
-            .join(BUNDLED_HUB_REL);
-        if candidate.is_file() {
-            return Some(candidate);
+            .join(BUNDLED_HUB_DIR);
+        if let Some(found) = find_hub_exe_in(&candidate) {
+            return Some(found);
         }
     }
 
     let parent = exe.parent()?;
-    for candidate in [
-        parent.join("resources").join(BUNDLED_HUB_REL),
-        parent.join(BUNDLED_HUB_REL),
+    for hub_dir in [
+        parent.join(BUNDLED_HUB_DIR),
+        parent.join("resources").join(BUNDLED_HUB_DIR),
     ] {
-        if candidate.is_file() {
-            return Some(candidate);
+        if let Some(found) = find_hub_exe_in(&hub_dir) {
+            return Some(found);
         }
     }
 
     None
+}
+
+fn entry_is_script(entry: &Path) -> bool {
+    entry
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "js" | "cjs" | "mjs"))
 }
 
 fn resolve_bridge_entry() -> Option<PathBuf> {
@@ -118,51 +133,51 @@ fn resolve_bridge_entry() -> Option<PathBuf> {
         }
     }
 
+    if let Some(path) = resource_hub_exe_near_exe() {
+        return Some(path);
+    }
+
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let candidates = [
+    let dev_candidates = [
+        manifest.join("../hub/dist/hub-bundle/arcane-bridge-hub"),
+        manifest.join("../hub/dist/hub-bundle/arcane-bridge-hub.exe"),
+        manifest.join("../hub/dist/arcane-bridge.cjs"),
         manifest.join("../hub/src/index.js"),
-        manifest.join("../hub/dist/arcane-bridge.mjs"),
     ];
-    for path in candidates {
+    for path in dev_candidates {
         if path.is_file() {
             return Some(path);
         }
     }
 
-    resource_hub_entry_near_exe()
+    None
 }
 
-fn bridge_working_dir(entry: &Path) -> PathBuf {
-    if entry
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n == "arcane-bridge.mjs")
-    {
-        return entry
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-    }
-
+fn hub_working_dir(entry: &Path) -> PathBuf {
     entry
         .parent()
-        .and_then(|p| p.parent())
-        .filter(|p| p.join("package.json").is_file())
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| {
-            entry
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."))
-        })
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn node_binary() -> String {
-    std::env::var("ARCANE_BRIDGE_NODE")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "node".to_string())
+fn build_hub_command(entry: &Path, host: &str, port: u16) -> Command {
+    let cwd = hub_working_dir(entry);
+    let mut cmd = if entry_is_script(entry) {
+        let node = std::env::var("ARCANE_BRIDGE_NODE").unwrap_or_else(|_| "node".to_string());
+        let mut script_cmd = Command::new(node);
+        script_cmd.arg(entry);
+        script_cmd
+    } else {
+        Command::new(entry)
+    };
+
+    cmd.current_dir(cwd)
+        .env("ARCANE_BRIDGE_HOST", host)
+        .env("ARCANE_BRIDGE_PORT", port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    cmd
 }
 
 /// Start hub if port is down. Returns true when this process spawned the child.
@@ -176,21 +191,18 @@ pub fn ensure_hub_running() -> Result<bool, String> {
     }
 
     let entry = resolve_bridge_entry().ok_or_else(|| {
-        "hub entry not found — install Node 18+ or set ARCANE_BRIDGE_ENTRY".to_string()
+        "hub executable not found — reinstall Arcane Bridge or set ARCANE_BRIDGE_ENTRY".to_string()
     })?;
 
-    let cwd = bridge_working_dir(&entry);
-    let node = node_binary();
+    if entry_is_script(&entry) {
+        eprintln!("[arcane-bridge] dev hub script {:?} (requires Node on PATH)", entry);
+    } else {
+        eprintln!("[arcane-bridge] launching bundled hub {:?}", entry);
+    }
 
-    let mut child = Command::new(&node)
-        .arg(&entry)
-        .current_dir(&cwd)
-        .env("ARCANE_BRIDGE_HOST", &host)
-        .env("ARCANE_BRIDGE_PORT", port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let mut child = build_hub_command(&entry, &host, port)
         .spawn()
-        .map_err(|e| format!("failed to spawn hub ({node} {:?}): {e}", entry))?;
+        .map_err(|e| format!("failed to spawn hub ({:?}): {e}", entry))?;
 
     if let Some(stdout) = child.stdout.take() {
         std::thread::spawn(move || {

@@ -7,19 +7,20 @@ function parsePort(raw, fallback) {
     return Number.isFinite(n) && n > 0 && n <= 65535 ? n : fallback;
 }
 
-const host = process.env.ARCANE_BRIDGE_HOST?.trim() || "127.0.0.1";
-const port = parsePort(process.env.ARCANE_BRIDGE_PORT, 47991);
+async function main() {
+    const host = process.env.ARCANE_BRIDGE_HOST?.trim() || "127.0.0.1";
+    const port = parsePort(process.env.ARCANE_BRIDGE_PORT, 47991);
 
-const log = (msg) => {
-    const ts = new Date().toISOString();
-    console.log(`${ts} ${msg}`);
-};
+    const log = (msg) => {
+        const ts = new Date().toISOString();
+        console.log(`${ts} ${msg}`);
+    };
 
-log("[arcane-bridge] starting central node…");
-
-try {
+    log("[arcane-bridge] starting central node…");
     await startBridgeServer({ host, port, log });
-} catch (err) {
+}
+
+main().catch((err) => {
     console.error("[arcane-bridge] failed to start:", err?.message || err);
     process.exit(1);
-}
+});
