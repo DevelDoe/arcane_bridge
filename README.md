@@ -52,4 +52,4 @@ See [hub/BUILD.md](hub/BUILD.md).
 
 ## Release
 
-Tagged builds: `bridge-v0.1.0` → CI produces NSIS + DMG. See [docs/RELEASE.md](docs/RELEASE.md).
+Tag `bridge-v0.1.0` → CI builds **Windows, macOS, and Linux** installers and publishes a **GitHub Release**. Piggyback bundling and a future updater CDN remain separate options. See [docs/RELEASE.md](docs/RELEASE.md).

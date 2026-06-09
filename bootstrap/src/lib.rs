@@ -1,5 +1,6 @@
 //! Piggyback install + launch Arcane Bridge before apps connect to the hub.
 
+use std::fs;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -49,9 +50,9 @@ pub fn ensure_bridge_running(resource_dir: Option<&Path>) -> Result<(), String> 
         return Ok(());
     }
 
-    if bridge_is_installed() {
+    if let Some(bin) = installed_binary() {
         eprintln!("[bridge-bootstrap] launching {PRODUCT_NAME}");
-        launch_bridge()?;
+        launch_binary(&bin)?;
         if wait_for_hub(&host, port, Duration::from_secs(45)) {
             return Ok(());
         }
@@ -65,16 +66,19 @@ pub fn ensure_bridge_running(resource_dir: Option<&Path>) -> Result<(), String> 
         return Ok(());
     };
 
-    eprintln!("[bridge-bootstrap] installing {PRODUCT_NAME} from {}", installer.display());
+    eprintln!(
+        "[bridge-bootstrap] installing {PRODUCT_NAME} from {}",
+        installer.display()
+    );
     install_from_bundle(&installer)?;
 
-    if !bridge_is_installed() {
+    let Some(bin) = installed_binary() else {
         return Err(format!(
-            "install finished but {PRODUCT_NAME} was not found at expected path"
+            "install finished but {PRODUCT_NAME} binary was not found"
         ));
-    }
+    };
 
-    launch_bridge()?;
+    launch_binary(&bin)?;
     if wait_for_hub(&host, port, Duration::from_secs(60)) {
         eprintln!("[bridge-bootstrap] {PRODUCT_NAME} hub is up on {host}:{port}");
         return Ok(());
@@ -96,44 +100,63 @@ fn wait_for_hub(host: &str, port: u16, timeout: Duration) -> bool {
     false
 }
 
-fn bridge_is_installed() -> bool {
-    installed_app_path().is_some()
+fn installed_binary() -> Option<PathBuf> {
+    for candidate in installed_binary_candidates() {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
-fn installed_app_path() -> Option<PathBuf> {
+fn installed_binary_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
     #[cfg(target_os = "macos")]
     {
-        let app = PathBuf::from("/Applications").join(APP_BUNDLE_NAME);
-        if app.join("Contents/MacOS").join(BIN_NAME).is_file() {
-            return Some(app);
-        }
+        out.push(
+            PathBuf::from("/Applications")
+                .join(APP_BUNDLE_NAME)
+                .join("Contents/MacOS")
+                .join(BIN_NAME),
+        );
     }
 
     #[cfg(target_os = "windows")]
     {
         if let Some(exe) = windows_install_exe() {
-            if exe.is_file() {
-                return Some(exe);
-            }
+            out.push(exe);
         }
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
     {
-        let _ = ();
+        out.push(PathBuf::from("/usr/bin").join(BIN_NAME));
+        out.push(linux_user_install_root().join("usr/bin").join(BIN_NAME));
+        if let Ok(home) = std::env::var("HOME") {
+            out.push(PathBuf::from(home).join(".local/bin").join(BIN_NAME));
+        }
     }
 
-    None
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn linux_user_install_root() -> PathBuf {
+    std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".local/share/arcane-bridge"))
+        .unwrap_or_else(|_| PathBuf::from(".local/share/arcane-bridge"))
 }
 
 #[cfg(target_os = "windows")]
 fn windows_install_exe() -> Option<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")?;
-    let exe = PathBuf::from(local)
-        .join("Programs")
-        .join(PRODUCT_NAME)
-        .join(format!("{BIN_NAME}.exe"));
-    Some(exe)
+    Some(
+        PathBuf::from(local)
+            .join("Programs")
+            .join(PRODUCT_NAME)
+            .join(format!("{BIN_NAME}.exe")),
+    )
 }
 
 fn find_bundled_installer(resource_dir: Option<&Path>) -> Option<PathBuf> {
@@ -166,35 +189,28 @@ fn pick_installer_in_dir(dir: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        for name in ["arcane-bridge-setup.exe", "Arcane Bridge-setup.exe"] {
-            let p = dir.join(name);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("exe")
-                    && p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.to_lowercase().contains("bridge"))
-                {
-                    return Some(p);
-                }
-            }
-        }
-    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return None;
+    };
 
-    #[cfg(target_os = "macos")]
-    {
-        for name in ["Arcane-Bridge.app.tar.gz", "arcane-bridge.app.tar.gz"] {
-            let p = dir.join(name);
-            if p.is_file() {
-                return Some(p);
-            }
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let lower = name.to_lowercase();
+
+        #[cfg(target_os = "windows")]
+        if lower.ends_with(".exe") && lower.contains("bridge") {
+            return Some(p);
+        }
+
+        #[cfg(target_os = "macos")]
+        if lower.ends_with(".app.tar.gz") && lower.contains("bridge") {
+            return Some(p);
+        }
+
+        #[cfg(target_os = "linux")]
+        if lower.ends_with(".deb") && lower.contains("bridge") {
+            return Some(p);
         }
     }
 
@@ -229,43 +245,36 @@ fn install_from_bundle(installer: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        let root = linux_user_install_root();
+        if root.exists() {
+            let _ = fs::remove_dir_all(&root);
+        }
+        fs::create_dir_all(&root).map_err(|e| format!("create install dir: {e}"))?;
+        let status = Command::new("dpkg-deb")
+            .args(["-x", installer.to_str().ok_or("installer path")?, root.to_str().ok_or("install root")?])
+            .status()
+            .map_err(|e| format!("dpkg-deb extract: {e}"))?;
+        if !status.success() {
+            return Err(format!("dpkg-deb exited with {status}"));
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = installer;
-        Err("bridge piggyback install is only supported on macOS and Windows".into())
+        Err("bridge piggyback install is not supported on this platform".into())
     }
 }
 
-fn launch_bridge() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(app) = installed_app_path() {
-            Command::new("open")
-                .arg("-a")
-                .arg(&app)
-                .spawn()
-                .map_err(|e| format!("open bridge app: {e}"))?;
-            return Ok(());
-        }
-        Command::new("open")
-            .arg("-a")
-            .arg(PRODUCT_NAME)
-            .spawn()
-            .map_err(|e| format!("open bridge: {e}"))?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let exe = windows_install_exe().ok_or("windows bridge path unknown")?;
-        Command::new(&exe)
-            .spawn()
-            .map_err(|e| format!("launch bridge: {e}"))?;
-        return Ok(());
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        Err("launch bridge unsupported on this platform".into())
-    }
+fn launch_binary(bin: &Path) -> Result<(), String> {
+    Command::new(bin)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("launch {}: {e}", bin.display()))?;
+    Ok(())
 }
