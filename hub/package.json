@@ -1,0 +1,23 @@
+{
+  "name": "arcane-bridge",
+  "version": "0.1.0",
+  "description": "Central localhost JSONL bridge hub for Arcane apps (Monitor, Guilds, Caster)",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "arcane-bridge": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "build": "node scripts/build-standalone.mjs",
+    "start:dist": "node dist/arcane-bridge.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

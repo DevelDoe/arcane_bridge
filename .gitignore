@@ -1,0 +1,23 @@
+# Rust / Tauri
+backend/target/
+backend/gen/
+
+# Hub (Node)
+hub/node_modules/
+hub/dist/
+
+# Staged installers (copied into other apps before release builds)
+dist/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local env
+.env
+.env.*
+
+# Logs
+*.log

@@ -1,0 +1,135 @@
+name: Build and Publish Bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        required: true
+        default: stable
+        type: choice
+        options:
+          - beta
+          - stable
+  push:
+    tags:
+      - "bridge-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-upload:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hub/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-on-failure: true
+
+      - name: Cache Tauri CLI
+        id: cache-tauri-cli
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-tauri
+            ~/.cargo/bin/cargo-tauri.exe
+          key: tauri-cli-v2-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            tauri-cli-v2-${{ runner.os }}-
+
+      - name: Install Tauri CLI
+        if: steps.cache-tauri-cli.outputs.cache-hit != 'true'
+        run: cargo install tauri-cli --locked --version "^2.0.0"
+
+      - name: Build hub bundle
+        run: npm ci && npm run build
+        working-directory: hub
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            CHANNEL="${{ inputs.channel }}"
+          elif [[ "${GITHUB_REF_NAME}" == *"-beta"* ]]; then
+            CHANNEL="beta"
+          else
+            CHANNEL="stable"
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#bridge-v}"
+          else
+            VERSION="$(node -p "require('./backend/tauri.conf.json').version")"
+          fi
+
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Channel: ${CHANNEL}"
+          echo "Version: ${VERSION}"
+
+      - name: Build Tauri app (Windows NSIS)
+        if: matrix.platform == 'windows'
+        run: cargo tauri build --bundles nsis
+        working-directory: backend
+
+      - name: Build Tauri app (macOS DMG)
+        if: matrix.platform == 'darwin'
+        run: cargo tauri build --bundles app,dmg
+        working-directory: backend
+
+      - name: Collect installer artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          VERSION="${{ steps.meta.outputs.version }}"
+
+          case "${{ matrix.platform }}" in
+            windows)
+              ARTIFACT="$(ls -1 backend/target/release/bundle/nsis/*.exe | head -n 1)"
+              ;;
+            darwin)
+              ARTIFACT="$(ls -1 backend/target/release/bundle/dmg/*.dmg | head -n 1)"
+              ;;
+            *)
+              echo "::error::Unsupported platform"
+              exit 1
+              ;;
+          esac
+
+          cp "${ARTIFACT}" "upload/"
+          ls -la upload
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcane-bridge-${{ matrix.platform }}-${{ steps.meta.outputs.version }}
+          path: upload/*
+          if-no-files-found: error

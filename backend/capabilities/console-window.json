@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "console-window",
+  "description": "Bridge Console webview — live hub status",
+  "windows": ["bridge-console"],
+  "permissions": ["core:default", "core:event:allow-listen"]
+}
