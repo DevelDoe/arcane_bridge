@@ -2,7 +2,7 @@
 /**
  * Package the bundled hub into a single native executable (no user Node install).
  */
-import { execFileSync } from "child_process";
+import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -32,14 +32,20 @@ fs.rmSync(bundleDir, { recursive: true, force: true });
 fs.mkdirSync(bundleDir, { recursive: true });
 
 const outputBase = path.join(bundleDir, "arcane-bridge-hub");
-const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+const pkgCli = path.join(hubRoot, "node_modules", "@yao-pkg", "pkg", "lib-es5", "bin.js");
 
 console.log(`[hub-exe] packaging ${entry} for ${target}`);
-execFileSync(
-    npx,
-    ["pkg", entry, "--sea", "-t", target, "-o", outputBase],
+const result = spawnSync(
+    process.execPath,
+    [pkgCli, entry, "--sea", "-t", target, "-o", outputBase],
     { stdio: "inherit", cwd: hubRoot },
 );
+if (result.error) {
+    throw result.error;
+}
+if (result.status !== 0) {
+    throw new Error(`pkg exited with code ${result.status ?? "unknown"}`);
+}
 
 const builtName = process.platform === "win32" ? "arcane-bridge-hub.exe" : "arcane-bridge-hub";
 const built = path.join(bundleDir, builtName);
