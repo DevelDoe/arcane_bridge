@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Arcane Bridge",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "identifier": "com.arcanemonitor.bridge",
   "build": {
     "beforeBuildCommand": {
-      "script": "npm ci && npm run build",
+      "script": "npm run build:bundle",
       "cwd": "../hub"
     },
     "frontendDist": "../frontend/dist"
@@ -20,7 +20,7 @@
   "bundle": {
     "active": true,
     "resources": {
-      "../hub/dist/arcane-bridge.mjs": "hub/arcane-bridge.mjs"
+      "../hub/dist/hub-bundle/": "hub/"
     },
     "icon": [
       "icons/32x32.png",

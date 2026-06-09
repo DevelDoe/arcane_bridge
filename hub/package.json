@@ -1,6 +1,6 @@
 {
   "name": "arcane-bridge",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Central localhost JSONL bridge hub for Arcane apps (Monitor, Guilds, Caster)",
   "private": true,
   "type": "module",
@@ -12,12 +12,14 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "build": "node scripts/build-standalone.mjs",
-    "start:dist": "node dist/arcane-bridge.mjs"
+    "build:bundle": "npm run build && node scripts/build-hub-exe.mjs",
+    "start:dist": "node dist/arcane-bridge.cjs"
   },
   "engines": {
     "node": ">=18"
   },
   "devDependencies": {
+    "@yao-pkg/pkg": "^6.14.0",
     "esbuild": "^0.25.0"
   }
 }
