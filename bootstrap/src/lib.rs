@@ -15,6 +15,11 @@ const BIN_NAME: &str = "arcane-bridge";
 
 static BOOTSTRAP_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
+enum InstallOutcome {
+    Complete,
+    NeedsUserInstall,
+}
+
 pub fn bridge_port_from_env() -> u16 {
     std::env::var("ARCANE_BRIDGE_PORT")
         .or_else(|_| std::env::var("ARCANE_GUILD_BRIDGE_PORT"))
@@ -50,9 +55,9 @@ pub fn ensure_bridge_running(resource_dir: Option<&Path>) -> Result<(), String> 
         return Ok(());
     }
 
-    if let Some(bin) = installed_binary() {
+    if installed_binary().is_some() {
         eprintln!("[bridge-bootstrap] launching {PRODUCT_NAME}");
-        launch_binary(&bin)?;
+        launch_bridge()?;
         if wait_for_hub(&host, port, Duration::from_secs(45)) {
             return Ok(());
         }
@@ -70,15 +75,23 @@ pub fn ensure_bridge_running(resource_dir: Option<&Path>) -> Result<(), String> 
         "[bridge-bootstrap] installing {PRODUCT_NAME} from {}",
         installer.display()
     );
-    install_from_bundle(&installer)?;
+    match install_from_bundle(&installer)? {
+        InstallOutcome::NeedsUserInstall => {
+            eprintln!(
+                "[bridge-bootstrap] opened Bridge installer — drag to Applications, then relaunch the app"
+            );
+            return Ok(());
+        }
+        InstallOutcome::Complete => {}
+    }
 
-    let Some(bin) = installed_binary() else {
+    if installed_binary().is_none() {
         return Err(format!(
             "install finished but {PRODUCT_NAME} binary was not found"
         ));
-    };
+    }
 
-    launch_binary(&bin)?;
+    launch_bridge()?;
     if wait_for_hub(&host, port, Duration::from_secs(60)) {
         eprintln!("[bridge-bootstrap] {PRODUCT_NAME} hub is up on {host}:{port}");
         return Ok(());
@@ -109,23 +122,48 @@ fn installed_binary() -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "macos")]
+fn installed_app_bundle_candidates() -> Vec<PathBuf> {
+    let mut out = vec![PathBuf::from("/Applications").join(APP_BUNDLE_NAME)];
+    if let Ok(home) = std::env::var("HOME") {
+        out.push(PathBuf::from(home).join("Applications").join(APP_BUNDLE_NAME));
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn installed_app_bundle() -> Option<PathBuf> {
+    for candidate in installed_app_bundle_candidates() {
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn installed_binary_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
 
     #[cfg(target_os = "macos")]
     {
-        out.push(
-            PathBuf::from("/Applications")
-                .join(APP_BUNDLE_NAME)
-                .join("Contents/MacOS")
-                .join(BIN_NAME),
-        );
+        for app in installed_app_bundle_candidates() {
+            out.push(app.join("Contents").join("MacOS").join(BIN_NAME));
+        }
     }
 
     #[cfg(target_os = "windows")]
     {
-        if let Some(exe) = windows_install_exe() {
-            out.push(exe);
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let base = PathBuf::from(local);
+            out.push(
+                base.join(PRODUCT_NAME)
+                    .join(format!("{BIN_NAME}.exe")),
+            );
+            out.push(
+                base.join("Programs")
+                    .join(PRODUCT_NAME)
+                    .join(format!("{BIN_NAME}.exe")),
+            );
         }
     }
 
@@ -146,17 +184,6 @@ fn linux_user_install_root() -> PathBuf {
     std::env::var("HOME")
         .map(|h| PathBuf::from(h).join(".local/share/arcane-bridge"))
         .unwrap_or_else(|_| PathBuf::from(".local/share/arcane-bridge"))
-}
-
-#[cfg(target_os = "windows")]
-fn windows_install_exe() -> Option<PathBuf> {
-    let local = std::env::var_os("LOCALAPPDATA")?;
-    Some(
-        PathBuf::from(local)
-            .join("Programs")
-            .join(PRODUCT_NAME)
-            .join(format!("{BIN_NAME}.exe")),
-    )
 }
 
 fn find_bundled_installer(resource_dir: Option<&Path>) -> Option<PathBuf> {
@@ -193,6 +220,9 @@ fn pick_installer_in_dir(dir: &Path) -> Option<PathBuf> {
         return None;
     };
 
+    #[cfg(target_os = "macos")]
+    let mut tarball: Option<PathBuf> = None;
+
     for entry in entries.flatten() {
         let p = entry.path();
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -204,8 +234,13 @@ fn pick_installer_in_dir(dir: &Path) -> Option<PathBuf> {
         }
 
         #[cfg(target_os = "macos")]
-        if lower.ends_with(".app.tar.gz") && lower.contains("bridge") {
-            return Some(p);
+        {
+            if lower.ends_with(".dmg") && lower.contains("bridge") {
+                return Some(p);
+            }
+            if lower.ends_with(".app.tar.gz") && lower.contains("bridge") {
+                tarball = Some(p);
+            }
         }
 
         #[cfg(target_os = "linux")]
@@ -214,10 +249,14 @@ fn pick_installer_in_dir(dir: &Path) -> Option<PathBuf> {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    return tarball;
+
+    #[cfg(not(target_os = "macos"))]
     None
 }
 
-fn install_from_bundle(installer: &Path) -> Result<(), String> {
+fn install_from_bundle(installer: &Path) -> Result<InstallOutcome, String> {
     #[cfg(target_os = "windows")]
     {
         let status = Command::new(installer)
@@ -228,21 +267,13 @@ fn install_from_bundle(installer: &Path) -> Result<(), String> {
             return Err(format!("installer exited with {status}"));
         }
         std::thread::sleep(Duration::from_secs(3));
-        return Ok(());
+        return Ok(InstallOutcome::Complete);
     }
 
     #[cfg(target_os = "macos")]
     {
-        let dest = PathBuf::from("/Applications");
-        let status = Command::new("tar")
-            .args(["xzf", installer.to_str().ok_or("installer path")?, "-C"])
-            .arg(&dest)
-            .status()
-            .map_err(|e| format!("tar extract: {e}"))?;
-        if !status.success() {
-            return Err(format!("tar exited with {status}"));
-        }
-        return Ok(());
+        open_mac_installer(installer)?;
+        return Ok(InstallOutcome::NeedsUserInstall);
     }
 
     #[cfg(target_os = "linux")]
@@ -253,13 +284,17 @@ fn install_from_bundle(installer: &Path) -> Result<(), String> {
         }
         fs::create_dir_all(&root).map_err(|e| format!("create install dir: {e}"))?;
         let status = Command::new("dpkg-deb")
-            .args(["-x", installer.to_str().ok_or("installer path")?, root.to_str().ok_or("install root")?])
+            .args([
+                "-x",
+                installer.to_str().ok_or("installer path")?,
+                root.to_str().ok_or("install root")?,
+            ])
             .status()
             .map_err(|e| format!("dpkg-deb extract: {e}"))?;
         if !status.success() {
             return Err(format!("dpkg-deb exited with {status}"));
         }
-        return Ok(());
+        return Ok(InstallOutcome::Complete);
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -269,12 +304,73 @@ fn install_from_bundle(installer: &Path) -> Result<(), String> {
     }
 }
 
-fn launch_binary(bin: &Path) -> Result<(), String> {
-    Command::new(bin)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("launch {}: {e}", bin.display()))?;
+#[cfg(target_os = "macos")]
+fn open_mac_installer(installer: &Path) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let downloads = PathBuf::from(home).join("Downloads");
+    fs::create_dir_all(&downloads).map_err(|e| format!("create downloads dir: {e}"))?;
+
+    let file_name = installer
+        .file_name()
+        .ok_or("installer path has no file name")?;
+    let dest = downloads.join(file_name);
+    fs::copy(installer, &dest).map_err(|e| format!("copy installer to downloads: {e}"))?;
+
+    let _ = Command::new("xattr")
+        .args(["-d", "com.apple.quarantine"])
+        .arg(&dest)
+        .status();
+
+    let status = Command::new("open")
+        .arg(&dest)
+        .status()
+        .map_err(|e| format!("open installer: {e}"))?;
+    if !status.success() {
+        return Err(format!("open installer exited with {status}"));
+    }
+
+    eprintln!(
+        "[bridge-bootstrap] copied Bridge installer to {} — drag to Applications, then relaunch",
+        dest.display()
+    );
     Ok(())
+}
+
+fn launch_bridge() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(app) = installed_app_bundle() {
+            Command::new("open")
+                .args(["-a"])
+                .arg(&app)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| format!("launch {}: {e}", app.display()))?;
+            return Ok(());
+        }
+        Command::new("open")
+            .args(["-a", PRODUCT_NAME])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("launch {PRODUCT_NAME}: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let bin = installed_binary().ok_or_else(|| {
+            format!("{PRODUCT_NAME} binary not found after install")
+        })?;
+        Command::new(&bin)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("launch {}: {e}", bin.display()))?;
+        Ok(())
+    }
 }
