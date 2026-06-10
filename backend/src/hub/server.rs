@@ -100,7 +100,12 @@ impl HubRuntime {
     }
 }
 
-pub fn start(host: String, port: u16, status_tx: Sender<BridgeStatus>) -> Result<(), String> {
+pub fn start(
+    host: String,
+    port: u16,
+    version: String,
+    status_tx: Sender<BridgeStatus>,
+) -> Result<(), String> {
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
@@ -138,6 +143,7 @@ pub fn start(host: String, port: u16, status_tx: Sender<BridgeStatus>) -> Result
     let ctx = Arc::new(HubContext {
         host: host_for_ctx.clone(),
         port,
+        version,
         state,
         registry,
         pending_by_request_id: pending,

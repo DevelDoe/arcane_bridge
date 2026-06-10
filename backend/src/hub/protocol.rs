@@ -13,6 +13,7 @@ pub(crate) type ConnWriter = Arc<dyn Fn(ConnId, &[u8]) + Send + Sync>;
 pub struct HubContext {
     pub host: String,
     pub port: u16,
+    pub version: String,
     pub state: Arc<Mutex<HubState>>,
     pub registry: Arc<Mutex<ConnectionRegistry>>,
     pub pending_by_request_id: Arc<Mutex<HashMap<String, ConnId>>>,
@@ -21,6 +22,13 @@ pub struct HubContext {
 }
 
 impl HubContext {
+    fn enrich_admin_payload(&self, mut payload: Value) -> Value {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("version".to_string(), json!(self.version));
+        }
+        payload
+    }
+
     fn write(&self, conn: ConnId, obj: &Value) {
         if let Some(bytes) = encode_json_line(obj) {
             (self.write_bytes)(conn, &bytes);
@@ -137,7 +145,8 @@ impl HubContext {
         let (admin_subs, status, payload) = match self.registry.lock() {
             Ok(reg) => {
                 let admin_subs: Vec<ConnId> = reg.admin_subscribers().iter().copied().collect();
-                let (status, payload) = reg.status_and_admin_payload(&self.host, self.port);
+                let (status, raw) = reg.status_and_admin_payload(&self.host, self.port);
+                let payload = self.enrich_admin_payload(raw);
                 (admin_subs, status, payload)
             }
             Err(_) => return,
@@ -210,7 +219,11 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
                     "schema": 1,
                     "type": "hello.ack",
                     "id": id_ref,
-                    "payload": { "app": "arcane-bridge", "protocol": 1 }
+                    "payload": {
+                        "app": "arcane-bridge",
+                        "protocol": 1,
+                        "version": ctx.version
+                    }
                 }),
             );
         }
@@ -511,6 +524,7 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
             } else {
                 json!({})
             };
+            let snapshot = ctx.enrich_admin_payload(snapshot);
             ctx.broadcast_admin_status();
             ctx.write(
                 conn,
@@ -528,6 +542,7 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
                 .lock()
                 .map(|r| r.admin_payload(&ctx.host, ctx.port))
                 .unwrap_or(json!({}));
+            let snapshot = ctx.enrich_admin_payload(snapshot);
             ctx.write(
                 conn,
                 &json!({

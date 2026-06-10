@@ -41,7 +41,7 @@ pub fn acquire_singleton_lock() -> Result<std::net::TcpListener, String> {
 }
 
 /// Start the TCP hub inside this process. Returns a channel of tray status updates.
-pub fn start_in_process_hub() -> Result<Receiver<BridgeStatus>, String> {
+pub fn start_in_process_hub(version: &str) -> Result<Receiver<BridgeStatus>, String> {
     let host = bridge_host_from_env();
     let port = bridge_port_from_env();
 
@@ -52,6 +52,6 @@ pub fn start_in_process_hub() -> Result<Receiver<BridgeStatus>, String> {
     }
 
     let (tx, rx) = std::sync::mpsc::channel();
-    hub::start(host, port, tx)?;
+    hub::start(host, port, version.to_string(), tx)?;
     Ok(rx)
 }

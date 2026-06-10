@@ -126,7 +126,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_dock_visibility(false);
 
-            let hub_rx = start_in_process_hub().map_err(|e| {
+            let bridge_version = app.package_info().version.to_string();
+            let hub_rx = start_in_process_hub(&bridge_version).map_err(|e| {
                 eprintln!("[arcane-bridge] hub start: {e}");
                 std::io::Error::other(e)
             })?;

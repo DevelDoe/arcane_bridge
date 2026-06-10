@@ -21,6 +21,29 @@ enum InstallOutcome {
     NeedsUserInstall,
 }
 
+const BUNDLED_INSTALLER_SUFFIXES: &[&str] = &[
+    "-windows-setup.exe",
+    "-macos.dmg",
+    "-macos.app.tar.gz",
+    "-linux-amd64.deb",
+];
+
+/// Semver parsed from a staged piggyback installer filename (`Arcane-Bridge-{version}-…`).
+pub fn bundled_bridge_version(resource_dir: Option<&Path>) -> Option<String> {
+    let installer = find_bundled_installer(resource_dir)?;
+    let name = installer.file_name()?.to_str()?;
+    let rest = name.strip_prefix("Arcane-Bridge-")?;
+    for suffix in BUNDLED_INSTALLER_SUFFIXES {
+        if let Some(version) = rest.strip_suffix(suffix) {
+            let trimmed = version.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub fn bridge_port_from_env() -> u16 {
     std::env::var("ARCANE_BRIDGE_PORT")
         .or_else(|_| std::env::var("ARCANE_GUILD_BRIDGE_PORT"))

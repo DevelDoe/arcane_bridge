@@ -15,12 +15,11 @@ on:
     tags:
       - "bridge-v*"
 
-permissions:
-  contents: read
-
 jobs:
   build:
     name: Build (${{ matrix.platform }})
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -275,6 +274,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ github.token }}
           tag_name: ${{ github.ref_name }}
           name: Arcane Bridge v${{ steps.meta.outputs.version }}
           prerelease: ${{ steps.meta.outputs.prerelease }}
@@ -297,5 +297,3 @@ jobs:
 
             Channel: **${{ steps.meta.outputs.channel }}**
           files: release-assets/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
