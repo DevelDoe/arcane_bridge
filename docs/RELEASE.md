@@ -5,7 +5,7 @@
 ```bash
 git pull
 cd arcane_bridge
-./scripts/release.sh          # patch (default)
+./scripts/release.sh        
 ./scripts/release.sh minor
 ./scripts/release.sh major
 ```

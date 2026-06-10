@@ -86,12 +86,10 @@ impl HubRuntime {
                         .lock()
                         .ok()
                         .is_some_and(|r| r.monitor_publisher() == Some(conn));
-                    if let Ok(map) = self.streams.lock() {
-                        if monitor_now {
-                            handle_monitor_publisher_line(&self.ctx, conn, &line, &map);
-                        } else {
-                            handle_client_line(&self.ctx, conn, &line, &map);
-                        }
+                    if monitor_now {
+                        handle_monitor_publisher_line(&self.ctx, conn, &line);
+                    } else {
+                        handle_client_line(&self.ctx, conn, &line);
                     }
                 }
                 Err(_) => break,

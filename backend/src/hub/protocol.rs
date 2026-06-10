@@ -2,11 +2,10 @@
 
 use crate::bridge_admin::BridgeStatus;
 use crate::hub::connections::{infer_role_from_client_id, ClientRole, ConnId, ConnectionRegistry};
-use crate::hub::io::{encode_json_line, encode_line_with_payload, write_bytes_to_stream};
+use crate::hub::io::{encode_json_line, encode_line_with_payload};
 use crate::hub::state::HubState;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 
 pub(crate) type ConnWriter = Arc<dyn Fn(ConnId, &[u8]) + Send + Sync>;
@@ -26,6 +25,14 @@ impl HubContext {
         if let Some(bytes) = encode_json_line(obj) {
             (self.write_bytes)(conn, &bytes);
         }
+    }
+
+    fn write_raw_line(&self, conn: ConnId, line: &str) {
+        let mut bytes = line.as_bytes().to_vec();
+        if !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        (self.write_bytes)(conn, &bytes);
     }
 
     fn error_line(id: Option<&str>, code: &str, message: &str) -> Value {
@@ -565,14 +572,6 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
     }
 }
 
-pub fn write_raw_line_to_stream(stream: &Arc<Mutex<TcpStream>>, line: &str) {
-    let mut bytes = line.as_bytes().to_vec();
-    if !bytes.ends_with(b"\n") {
-        bytes.push(b'\n');
-    }
-    write_bytes_to_stream(stream, &bytes);
-}
-
 const FORWARD_TO_MONITOR: &[&str] = &[
     "watchlist.add",
     "watchlist.remove",
@@ -595,12 +594,7 @@ pub fn is_monitor_publish_type(msg_type: &str) -> bool {
     MONITOR_PUBLISH_TYPES.contains(&msg_type)
 }
 
-pub fn handle_monitor_publisher_line(
-    ctx: &HubContext,
-    _publisher: ConnId,
-    line: &str,
-    client_streams: &HashMap<ConnId, Arc<Mutex<TcpStream>>>,
-) {
+pub fn handle_monitor_publisher_line(ctx: &HubContext, _publisher: ConnId, line: &str) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return;
@@ -613,9 +607,7 @@ pub fn handle_monitor_publisher_line(
     if let Some(ref rid) = req_id {
         if let Ok(mut pending) = ctx.pending_by_request_id.lock() {
             if let Some(client) = pending.remove(rid) {
-                if let Some(stream) = client_streams.get(&client) {
-                    write_raw_line_to_stream(stream, trimmed);
-                }
+                ctx.write_raw_line(client, trimmed);
                 if msg.get("type").and_then(|v| v.as_str()) == Some("watchlist.response") {
                     if let Some(payload) = msg.get("payload") {
                         if let Ok(mut state) = ctx.state.lock() {
@@ -635,12 +627,7 @@ pub fn handle_monitor_publisher_line(
     }
 }
 
-pub fn handle_client_line(
-    ctx: &HubContext,
-    conn: ConnId,
-    line: &str,
-    client_streams: &HashMap<ConnId, Arc<Mutex<TcpStream>>>,
-) {
+pub fn handle_client_line(ctx: &HubContext, conn: ConnId, line: &str) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return;
@@ -665,14 +652,12 @@ pub fn handle_client_line(
             );
             return;
         };
-        if let Some(stream) = client_streams.get(&publisher) {
-            if let Some(ref rid) = id {
-                if let Ok(mut pending) = ctx.pending_by_request_id.lock() {
-                    pending.insert(rid.clone(), conn);
-                }
+        if let Some(ref rid) = id {
+            if let Ok(mut pending) = ctx.pending_by_request_id.lock() {
+                pending.insert(rid.clone(), conn);
             }
-            write_raw_line_to_stream(stream, trimmed);
         }
+        ctx.write_raw_line(publisher, trimmed);
         return;
     }
 
