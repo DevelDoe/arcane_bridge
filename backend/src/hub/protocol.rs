@@ -122,6 +122,17 @@ impl HubContext {
         self.fanout("casterTicket.notify", fill.clone(), &subs);
     }
 
+    pub fn broadcast_caster_blowup(&self, event: &Value) {
+        if !event.is_object() {
+            return;
+        }
+        let subs = self.subscriber_ids(|r| r.caster_blowup_subscribers());
+        if subs.is_empty() {
+            return;
+        }
+        self.fanout("casterBlowup.notify", event.clone(), &subs);
+    }
+
     pub fn broadcast_admin_status(&self) {
         let (admin_subs, status, payload) = match self.registry.lock() {
             Ok(reg) => {
@@ -418,6 +429,25 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
         "casterTicket.subscribe" => {
             if let Ok(mut reg) = ctx.registry.lock() {
                 reg.caster_ticket_subscribers_mut().insert(conn);
+            }
+        }
+        "casterBlowup.notify" => {
+            if payload.is_object() {
+                ctx.broadcast_caster_blowup(&payload);
+            }
+            ctx.write(
+                conn,
+                &json!({
+                    "schema": 1,
+                    "type": "casterBlowup.ack",
+                    "id": id_ref,
+                    "payload": { "ok": true }
+                }),
+            );
+        }
+        "casterBlowup.subscribe" => {
+            if let Ok(mut reg) = ctx.registry.lock() {
+                reg.caster_blowup_subscribers_mut().insert(conn);
             }
         }
         "guildsFeed.publish" => {

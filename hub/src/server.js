@@ -49,6 +49,7 @@ export function startBridgeServer(opts) {
     const casterAccountSubscribers = new Set();
     const casterJournalSubscribers = new Set();
     const casterTicketSubscribers = new Set();
+    const casterBlowupSubscribers = new Set();
     const adminSubscribers = new Set();
     /** @type {import("net").Socket | null} */
     let monitorPublisher = null;
@@ -158,6 +159,28 @@ export function startBridgeServer(opts) {
         }
     };
 
+    /** @param {Record<string, unknown>} blowupPayload */
+    const broadcastCasterBlowup = (blowupPayload) => {
+        if (!blowupPayload || typeof blowupPayload !== "object" || casterBlowupSubscribers.size === 0) {
+            return;
+        }
+        const line = `${JSON.stringify({
+            schema: 1,
+            type: "casterBlowup.notify",
+            id: null,
+            payload: blowupPayload,
+        })}\n`;
+        for (const s of casterBlowupSubscribers) {
+            if (s && !s.destroyed && s.writable) {
+                try {
+                    s.write(line);
+                } catch {
+                    /* ignore */
+                }
+            }
+        }
+    };
+
     const broadcastAdminStatus = () => {
         if (adminSubscribers.size === 0) return;
         const payload = connectionsSnapshot(ctx, host, port);
@@ -184,6 +207,7 @@ export function startBridgeServer(opts) {
         casterAccountSubscribers,
         casterJournalSubscribers,
         casterTicketSubscribers,
+        casterBlowupSubscribers,
         adminSubscribers,
         host,
         port,
@@ -196,6 +220,7 @@ export function startBridgeServer(opts) {
         broadcastCasterAccount,
         broadcastCasterJournal,
         broadcastCasterTicket,
+        broadcastCasterBlowup,
         notifyConnectionsChanged: broadcastAdminStatus,
     };
 
@@ -246,6 +271,7 @@ export function startBridgeServer(opts) {
             casterAccountSubscribers.delete(socket);
             casterJournalSubscribers.delete(socket);
             casterTicketSubscribers.delete(socket);
+            casterBlowupSubscribers.delete(socket);
             adminSubscribers.delete(socket);
             if (socket === monitorPublisher) {
                 monitorPublisher = null;

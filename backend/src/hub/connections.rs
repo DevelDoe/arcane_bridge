@@ -62,6 +62,7 @@ pub struct ConnectionRegistry {
     caster_account_subscribers: HashSet<ConnId>,
     caster_journal_subscribers: HashSet<ConnId>,
     caster_ticket_subscribers: HashSet<ConnId>,
+    caster_blowup_subscribers: HashSet<ConnId>,
     admin_subscribers: HashSet<ConnId>,
     monitor_publisher: Option<ConnId>,
 }
@@ -75,6 +76,7 @@ impl ConnectionRegistry {
             caster_account_subscribers: HashSet::new(),
             caster_journal_subscribers: HashSet::new(),
             caster_ticket_subscribers: HashSet::new(),
+            caster_blowup_subscribers: HashSet::new(),
             admin_subscribers: HashSet::new(),
             monitor_publisher: None,
         }
@@ -98,6 +100,7 @@ impl ConnectionRegistry {
         self.caster_account_subscribers.remove(&id);
         self.caster_journal_subscribers.remove(&id);
         self.caster_ticket_subscribers.remove(&id);
+        self.caster_blowup_subscribers.remove(&id);
         self.admin_subscribers.remove(&id);
         self.meta.remove(&id);
         if self.monitor_publisher == Some(id) {
@@ -139,6 +142,10 @@ impl ConnectionRegistry {
         &self.caster_ticket_subscribers
     }
 
+    pub fn caster_blowup_subscribers(&self) -> &HashSet<ConnId> {
+        &self.caster_blowup_subscribers
+    }
+
     pub fn admin_subscribers(&self) -> &HashSet<ConnId> {
         &self.admin_subscribers
     }
@@ -161,6 +168,10 @@ impl ConnectionRegistry {
 
     pub fn caster_ticket_subscribers_mut(&mut self) -> &mut HashSet<ConnId> {
         &mut self.caster_ticket_subscribers
+    }
+
+    pub fn caster_blowup_subscribers_mut(&mut self) -> &mut HashSet<ConnId> {
+        &mut self.caster_blowup_subscribers
     }
 
     pub fn admin_subscribers_mut(&mut self) -> &mut HashSet<ConnId> {

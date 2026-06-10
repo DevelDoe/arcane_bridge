@@ -264,6 +264,25 @@ export function handleMessage(socket, msg, ctx) {
         return;
     }
 
+    if (type === "casterBlowup.notify") {
+        const event = msg.payload;
+        if (event && typeof event === "object") {
+            ctx.broadcastCasterBlowup(event);
+        }
+        writeJsonLine(socket, {
+            schema: 1,
+            type: "casterBlowup.ack",
+            id,
+            payload: { ok: true },
+        });
+        return;
+    }
+
+    if (type === "casterBlowup.subscribe") {
+        ctx.casterBlowupSubscribers.add(socket);
+        return;
+    }
+
     if (type === "guildsFeed.publish") {
         mergeGuildsFeedPublish(msg.payload);
         writeJsonLine(socket, {
