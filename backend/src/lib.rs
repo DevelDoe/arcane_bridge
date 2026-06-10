@@ -4,6 +4,7 @@ mod console_window;
 mod hub;
 mod hub_runtime;
 mod shell_visibility;
+mod updates;
 
 use bridge_admin::BridgeStatus;
 use console_window::{emit_console_update, open_console, ConsoleState, SharedConsoleState};
@@ -27,8 +28,11 @@ fn build_tray_menu(app: &AppHandle, status: &BridgeStatus) -> Result<Menu<tauri:
     let title = MenuItem::with_id(app, "title", title_version_line(app), false, None::<&str>)?;
     let console =
         MenuItem::with_id(app, "console", "Bridge Console…", true, None::<&str>)?;
+    let check_updates =
+        MenuItem::with_id(app, "check_updates", "Check for updates…", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
+    let sep3 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Arcane Bridge", true, None::<&str>)?;
 
     let mut connected: Vec<MenuItem<tauri::Wry>> = Vec::new();
@@ -51,6 +55,8 @@ fn build_tray_menu(app: &AppHandle, status: &BridgeStatus) -> Result<Menu<tauri:
     }
     items.push(&console);
     items.push(&sep2);
+    items.push(&check_updates);
+    items.push(&sep3);
     items.push(&quit);
 
     Menu::with_items(app, &items)
@@ -113,6 +119,10 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+
             #[cfg(target_os = "macos")]
             app.set_dock_visibility(false);
 
@@ -155,6 +165,15 @@ pub fn run() {
                             let _ = app.run_on_main_thread(move || {
                                 if let Err(e) = open_console(&app_for_thread, &state) {
                                     eprintln!("[arcane-bridge] console: {e}");
+                                }
+                            });
+                        }
+                        "check_updates" => {
+                            let app_for_update = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = updates::check_and_install(&app_for_update).await
+                                {
+                                    eprintln!("[arcane-bridge] update: {e}");
                                 }
                             });
                         }

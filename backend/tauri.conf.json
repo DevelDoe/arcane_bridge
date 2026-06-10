@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Arcane Bridge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.arcanemonitor.bridge",
   "build": {
     "frontendDist": "../frontend/dist"
@@ -15,6 +15,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -22,5 +23,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY1NzQ4ODI1Q0EyQTQ5QkUKUldTK1NTcktKWWgwOVV0TndSV2pQK0tWTHZzN3hSL0JrZXo3NHRpZUwyOE5wakJnc0ZiNHFaY0IK",
+      "endpoints": [
+        "https://github.com/DevelDoe/arcane_bridge/releases/latest/download/{{target}}-{{arch}}.json"
+      ]
+    }
   }
 }
