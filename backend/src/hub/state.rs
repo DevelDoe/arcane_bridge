@@ -44,14 +44,22 @@ impl Default for HubState {
     }
 }
 
+fn is_invalid_symbol_placeholder(s: &str) -> bool {
+    matches!(s, "NULL" | "UNDEFINED" | "NONE" | "NIL")
+}
+
 fn normalize_symbol(raw: Option<&Value>) -> Option<String> {
-    let t = raw
-        .map(|v| match v {
-            Value::String(s) => s.trim().to_uppercase(),
-            _ => v.to_string().trim().to_uppercase(),
-        })
-        .unwrap_or_default();
-    if t.is_empty() {
+    let Some(v) = raw else {
+        return None;
+    };
+    // JSON null must not become the string "NULL" (serde_json Null Display is "null").
+    let t = match v {
+        Value::Null => return None,
+        Value::String(s) => s.trim().to_uppercase(),
+        // Reject non-string ticker values (bool/array/object/number stringify junk).
+        _ => return None,
+    };
+    if t.is_empty() || is_invalid_symbol_placeholder(&t) {
         None
     } else {
         Some(t)
@@ -77,14 +85,30 @@ fn normalize_symbols(arr: Option<&Value>) -> Vec<String> {
 impl HubState {
     pub fn watchlist_payload(&self) -> Value {
         let w = &self.watchlist;
+        let symbols: Vec<String> = w
+            .symbols
+            .iter()
+            .filter(|s| !is_invalid_symbol_placeholder(s))
+            .cloned()
+            .collect();
+        let scrub_focus = |opt: &Option<String>| -> Option<String> {
+            opt.as_ref().and_then(|s| {
+                let t = s.trim().to_uppercase();
+                if t.is_empty() || is_invalid_symbol_placeholder(&t) {
+                    None
+                } else {
+                    Some(t)
+                }
+            })
+        };
         let mut payload = json!({
-            "symbols": w.symbols,
-            "manualFocusSymbol": w.manual_focus_symbol,
+            "symbols": symbols,
+            "manualFocusSymbol": scrub_focus(&w.manual_focus_symbol),
             "activeStocks": w.active_stocks,
-            "activeTicker": w.active_ticker,
+            "activeTicker": scrub_focus(&w.active_ticker),
             "activeHeroModeEnabled": w.active_hero_mode_enabled,
         });
-        if let Some(sym) = &w.feed_focus_symbol {
+        if let Some(sym) = scrub_focus(&w.feed_focus_symbol) {
             payload["feedFocusSymbol"] = json!(sym);
         }
         if let Some(uid) = &w.publisher_user_id {

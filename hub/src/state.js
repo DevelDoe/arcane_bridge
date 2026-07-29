@@ -21,11 +21,17 @@ const state = {
     monitorToken: null,
 };
 
+function isInvalidSymbolPlaceholder(s) {
+    return s === "NULL" || s === "UNDEFINED" || s === "NONE" || s === "NIL";
+}
+
 function normalizeSymbol(raw) {
-    const t = String(raw ?? "")
+    if (raw == null) return null;
+    const t = String(raw)
         .trim()
         .toUpperCase();
-    return t.length > 0 ? t : null;
+    if (!t || isInvalidSymbolPlaceholder(t)) return null;
+    return t;
 }
 
 function normalizeSymbols(arr) {
@@ -43,15 +49,20 @@ function normalizeSymbols(arr) {
 
 export function watchlistPayload() {
     const w = state.watchlist;
+    const scrub = (sym) => {
+        const s = normalizeSymbol(sym);
+        return s;
+    };
     const payload = {
-        symbols: [...w.symbols],
-        manualFocusSymbol: w.manualFocusSymbol,
+        symbols: normalizeSymbols(w.symbols),
+        manualFocusSymbol: scrub(w.manualFocusSymbol),
         activeStocks: w.activeStocks.map((x) => ({ ...x })),
-        activeTicker: w.activeTicker,
+        activeTicker: scrub(w.activeTicker),
         activeHeroModeEnabled: w.activeHeroModeEnabled === true,
     };
-    if (w.feedFocusSymbol) {
-        payload.feedFocusSymbol = w.feedFocusSymbol;
+    const feed = scrub(w.feedFocusSymbol);
+    if (feed) {
+        payload.feedFocusSymbol = feed;
     }
     if (w.publisherUserId) {
         payload.publisherUserId = w.publisherUserId;
