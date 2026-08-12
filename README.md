@@ -38,8 +38,9 @@ On Windows: quit Bridge from the tray, or end any leftover `arcane-bridge-hub.ex
 ## Release
 
 ```bash
-./scripts/release.sh                    # tag + push → CI builds all platforms
-./scripts/stage-from-github-release.sh  # after CI: piggyback into other apps
+./scripts/release.sh   # tag + push → CI builds all platforms → GitHub Release
 ```
+
+Users install Bridge from the release (DMG / NSIS / deb). Companion apps do not bundle it.
 
 See [docs/RELEASE.md](docs/RELEASE.md).

@@ -20,5 +20,11 @@ hub/dist/
 .env
 .env.*
 
+# Apple CI artifacts (never commit)
+private_keys/
+certificate.p12
+*.p12
+*.p8
+
 # Logs
 *.log

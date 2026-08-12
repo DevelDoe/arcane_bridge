@@ -26,6 +26,7 @@ pub struct HubState {
     caster_journal: Option<Value>,
     guilds_feed: Option<Value>,
     monitor_token: Option<String>,
+    monitor_views: Vec<Value>,
 }
 
 impl Default for HubState {
@@ -40,6 +41,7 @@ impl Default for HubState {
             caster_journal: None,
             guilds_feed: None,
             monitor_token: None,
+            monitor_views: Vec::new(),
         }
     }
 }
@@ -83,6 +85,17 @@ fn normalize_symbols(arr: Option<&Value>) -> Vec<String> {
 }
 
 impl HubState {
+    pub fn monitor_views(&self) -> Vec<Value> {
+        self.monitor_views.clone()
+    }
+
+    pub fn set_monitor_views(&mut self, payload: &Value) {
+        self.monitor_views = payload
+            .get("views")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+    }
     pub fn watchlist_payload(&self) -> Value {
         let w = &self.watchlist;
         let symbols: Vec<String> = w
@@ -227,5 +240,6 @@ impl HubState {
         self.caster_journal = None;
         self.guilds_feed = None;
         self.monitor_token = None;
+        self.monitor_views.clear();
     }
 }

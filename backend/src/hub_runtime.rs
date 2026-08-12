@@ -5,6 +5,7 @@ use std::sync::mpsc::Receiver;
 
 use crate::bridge_admin::BridgeStatus;
 use crate::hub;
+pub use crate::hub::{HubControl, HubEvent};
 
 const DEFAULT_BRIDGE_PORT: u16 = 47991;
 const DEFAULT_BRIDGE_HOST: &str = "127.0.0.1";
@@ -41,7 +42,9 @@ pub fn acquire_singleton_lock() -> Result<std::net::TcpListener, String> {
 }
 
 /// Start the TCP hub inside this process. Returns a channel of tray status updates.
-pub fn start_in_process_hub(version: &str) -> Result<Receiver<BridgeStatus>, String> {
+pub fn start_in_process_hub(
+    version: &str,
+) -> Result<(Receiver<BridgeStatus>, Receiver<HubEvent>, HubControl), String> {
     let host = bridge_host_from_env();
     let port = bridge_port_from_env();
 
@@ -52,6 +55,7 @@ pub fn start_in_process_hub(version: &str) -> Result<Receiver<BridgeStatus>, Str
     }
 
     let (tx, rx) = std::sync::mpsc::channel();
-    hub::start(host, port, version.to_string(), tx)?;
-    Ok(rx)
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let control = hub::start(host, port, version.to_string(), tx, event_tx)?;
+    Ok((rx, event_rx, control))
 }

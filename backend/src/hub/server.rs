@@ -3,7 +3,7 @@
 use crate::bridge_admin::BridgeStatus;
 use crate::hub::connections::{ConnectionRegistry, ConnId};
 use crate::hub::io::write_bytes_to_stream;
-use crate::hub::protocol::{handle_client_line, handle_monitor_publisher_line, ConnWriter, HubContext};
+use crate::hub::protocol::{handle_client_line, handle_monitor_publisher_line, ConnWriter, HubContext, HubEvent};
 use crate::hub::state::HubState;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -19,6 +19,50 @@ static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 struct HubRuntime {
     ctx: Arc<HubContext>,
     streams: Arc<Mutex<HashMap<ConnId, Arc<Mutex<TcpStream>>>>>,
+}
+
+#[derive(Clone)]
+pub struct HubControl {
+    ctx: Arc<HubContext>,
+}
+
+impl HubControl {
+    pub fn monitor_views(&self) -> Vec<serde_json::Value> {
+        self.ctx
+            .state
+            .lock()
+            .map(|state| state.monitor_views())
+            .unwrap_or_default()
+    }
+
+    pub fn place_monitor_view(&self, request_id: &str, payload: serde_json::Value) -> Result<(), String> {
+        self.ctx
+            .send_to_monitor("monitor.view.place", request_id, payload)
+    }
+
+    pub fn hydrate_monitor_zones(&self, request_id: &str, placements: serde_json::Value) -> Result<(), String> {
+        self.ctx.send_to_monitor(
+            "monitor.zones.hydrate",
+            request_id,
+            serde_json::json!({ "placements": placements }),
+        )
+    }
+
+    pub fn close_monitor_view(&self, request_id: &str, view_id: &str) -> Result<(), String> {
+        self.ctx.send_to_monitor(
+            "monitor.view.close",
+            request_id,
+            serde_json::json!({ "viewId": view_id }),
+        )
+    }
+
+    pub fn configure_monitor_trader_pools(&self, request_id: &str, pools: serde_json::Value) -> Result<(), String> {
+        self.ctx.send_to_monitor(
+            "monitor.traderZones.configure",
+            request_id,
+            serde_json::json!({ "pools": pools }),
+        )
+    }
 }
 
 impl HubRuntime {
@@ -105,7 +149,8 @@ pub fn start(
     port: u16,
     version: String,
     status_tx: Sender<BridgeStatus>,
-) -> Result<(), String> {
+    event_tx: Sender<HubEvent>,
+) -> Result<HubControl, String> {
     let addr: SocketAddr = format!("{host}:{port}")
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
@@ -130,6 +175,9 @@ pub fn start(
             let _ = status_tx.send(status);
         }) as Arc<dyn Fn(BridgeStatus) + Send + Sync>
     };
+    let notify_event = Arc::new(move |event: HubEvent| {
+        let _ = event_tx.send(event);
+    }) as Arc<dyn Fn(HubEvent) + Send + Sync>;
 
     let streams_for_write = Arc::clone(&streams);
     let write_bytes: ConnWriter = Arc::new(move |conn, bytes| {
@@ -149,6 +197,7 @@ pub fn start(
         pending_by_request_id: pending,
         write_bytes,
         notify_status,
+        notify_event,
     });
 
     let runtime = Arc::new(HubRuntime {
@@ -171,7 +220,7 @@ pub fn start(
     });
 
     eprintln!("[arcane-bridge] hub listening on {host}:{port} (in-process)");
-    Ok(())
+    Ok(HubControl { ctx })
 }
 
 pub fn probe_bridge_port(host: &str, port: u16) -> bool {

@@ -1,0 +1,475 @@
+//! Platform-wide zoning overlays, one frameless editor per connected display.
+
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fs, sync::{LazyLock, Mutex}, time::{Duration, Instant}};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+use crate::hub_runtime::HubControl;
+
+const ZONE_LABEL_PREFIX: &str = "zone-overlay-";
+static RECENT_PLACEMENTS: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneRect {
+    pub id: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(default)]
+    pub view_id: Option<String>,
+    #[serde(default)]
+    pub view_label: Option<String>,
+    #[serde(default)]
+    pub trader_pool: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorView {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneModeInitial {
+    pub zones: Vec<ZoneRect>,
+    pub views: Vec<MonitorView>,
+    pub assigned_view_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacedZone {
+    pub display_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone)]
+struct DisplayZones {
+    display_id: String,
+    persistence_key: String,
+    origin_x: f64,
+    origin_y: f64,
+    zones: Vec<ZoneRect>,
+}
+
+#[derive(Default)]
+pub struct ZoneModeState(Mutex<HashMap<String, DisplayZones>>);
+
+type SavedLayouts = HashMap<String, Vec<ZoneRect>>;
+
+fn monitor_layout_key(monitor: &tauri::Monitor) -> String {
+    let position = monitor.position();
+    let size = monitor.size();
+    let scale = monitor.scale_factor();
+    format!(
+        "{}|{}:{}|{}x{}|{scale}",
+        monitor.name().map(String::as_str).unwrap_or("unnamed"),
+        position.x,
+        position.y,
+        size.width,
+        size.height
+    )
+}
+
+fn trader_pool_payload(sessions: &HashMap<String, DisplayZones>) -> serde_json::Value {
+    let mut active = Vec::new();
+    let mut watch = Vec::new();
+    for session in sessions.values() {
+        for zone in &session.zones {
+            let target = match zone.trader_pool.as_deref() {
+                Some("active") => &mut active,
+                Some("watch") => &mut watch,
+                _ => continue,
+            };
+            target.push(serde_json::json!({
+                "zoneId": format!("{}:{}", session.persistence_key, zone.id),
+                "bounds": {
+                    "x": (session.origin_x + zone.x).round(),
+                    "y": (session.origin_y + zone.y).round(),
+                    "width": zone.width.round().max(1.0),
+                    "height": zone.height.round().max(1.0),
+                }
+            }));
+        }
+    }
+    serde_json::json!({ "active": active, "watch": watch })
+}
+
+fn layouts_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("zone-layouts.json"))
+        .map_err(|e| e.to_string())
+}
+
+fn load_layouts(app: &AppHandle) -> SavedLayouts {
+    let Ok(path) = layouts_path(app) else {
+        return HashMap::new();
+    };
+    let Ok(contents) = fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&contents).unwrap_or_else(|e| {
+        eprintln!("[arcane-bridge] read saved Zone Mode layouts: {e}");
+        HashMap::new()
+    })
+}
+
+fn save_layouts(app: &AppHandle, sessions: &HashMap<String, DisplayZones>) -> Result<(), String> {
+    let path = layouts_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    // Preserve layouts for displays that are not connected during this session.
+    let mut saved = load_layouts(app);
+    for session in sessions.values() {
+        saved.insert(session.persistence_key.clone(), session.zones.clone());
+    }
+    let json = serde_json::to_string_pretty(&saved).map_err(|e| e.to_string())?;
+    fs::write(path, json).map_err(|e| e.to_string())
+}
+
+pub fn unassign_monitor_view(app: &AppHandle, view_id: &str, cause: &str) -> Result<(), String> {
+    if cause == "closed" {
+        let recently_placed = RECENT_PLACEMENTS
+            .lock()
+            .ok()
+            .and_then(|placements| placements.get(view_id).copied())
+            .is_some_and(|placed_at| placed_at.elapsed() < Duration::from_secs(2));
+        if recently_placed {
+            eprintln!("[arcane-bridge] ignored transient close while placing {view_id}");
+            return Ok(());
+        }
+    }
+    let state = app.state::<ZoneModeState>();
+    if let Ok(mut sessions) = state.0.lock() {
+        for session in sessions.values_mut() {
+            for zone in &mut session.zones {
+                if zone.view_id.as_deref() == Some(view_id) {
+                    zone.view_id = None;
+                    zone.view_label = None;
+                }
+            }
+        }
+    }
+
+    let mut saved = load_layouts(app);
+    for zones in saved.values_mut() {
+        for zone in zones {
+            if zone.view_id.as_deref() == Some(view_id) {
+                zone.view_id = None;
+                zone.view_label = None;
+            }
+        }
+    }
+    let path = layouts_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(
+        path,
+        serde_json::to_string_pretty(&saved).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    app.emit("zone-mode-view-unzoned", serde_json::json!({ "viewId": view_id }))
+        .map_err(|e| e.to_string())
+}
+
+pub fn hydrate_monitor_views(app: &AppHandle) -> Result<(), String> {
+    let saved = load_layouts(app);
+    let monitors = app.available_monitors().map_err(|e| e.to_string())?;
+    let mut assigned = std::collections::HashSet::new();
+    let mut placements = Vec::new();
+
+    for monitor in monitors {
+        let key = monitor_layout_key(&monitor);
+        let Some(zones) = saved.get(&key) else {
+            continue;
+        };
+        let scale = monitor.scale_factor();
+        let position = monitor.position();
+        let origin_x = position.x as f64 / scale;
+        let origin_y = position.y as f64 / scale;
+        for zone in zones {
+            let Some(view_id) = zone.view_id.as_deref() else {
+                continue;
+            };
+            if !assigned.insert(view_id.to_string()) {
+                continue;
+            }
+            placements.push(serde_json::json!({
+                "viewId": view_id,
+                "bounds": {
+                    "x": (origin_x + zone.x).round(),
+                    "y": (origin_y + zone.y).round(),
+                    "width": zone.width.round().max(1.0),
+                    "height": zone.height.round().max(1.0),
+                }
+            }));
+        }
+    }
+
+    let request_id = format!(
+        "zone-hydrate-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default()
+    );
+    let count = placements.len();
+    let hub = app.state::<HubControl>();
+    hub.hydrate_monitor_zones(
+        &request_id,
+        serde_json::Value::Array(placements),
+    )?;
+    // Build the same pool snapshot from the saved layouts for boot hydration.
+    let mut pool_sessions = HashMap::new();
+    for monitor in app.available_monitors().map_err(|e| e.to_string())? {
+        let key = monitor_layout_key(&monitor);
+        let Some(zones) = saved.get(&key).cloned() else {
+            continue;
+        };
+        let scale = monitor.scale_factor();
+        let position = monitor.position();
+        pool_sessions.insert(
+            key.clone(),
+            DisplayZones {
+                display_id: key.clone(),
+                persistence_key: key,
+                origin_x: position.x as f64 / scale,
+                origin_y: position.y as f64 / scale,
+                zones,
+            },
+        );
+    }
+    hub.configure_monitor_trader_pools(&request_id, trader_pool_payload(&pool_sessions))?;
+    eprintln!("[arcane-bridge] hydrated {count} Monitor zone assignment(s)");
+    Ok(())
+}
+
+fn close_overlays(app: &AppHandle) {
+    for (_label, window) in app.webview_windows() {
+        if window.label().starts_with(ZONE_LABEL_PREFIX) {
+            let _ = window.close();
+        }
+    }
+}
+
+pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
+    close_overlays(app);
+
+    let monitors = app.available_monitors().map_err(|e| e.to_string())?;
+    if monitors.is_empty() {
+        return Err("no displays available for Zone Mode".into());
+    }
+
+    let saved_layouts = load_layouts(app);
+    let state = app.state::<ZoneModeState>();
+    let mut sessions = state.0.lock().map_err(|e| e.to_string())?;
+    sessions.clear();
+
+    for (index, monitor) in monitors.into_iter().enumerate() {
+        let label = format!("{ZONE_LABEL_PREFIX}{index}");
+        let display_id = format!("display-{index}");
+        let scale = monitor.scale_factor();
+        let position = monitor.position();
+        let size = monitor.size();
+        let origin_x = position.x as f64 / scale;
+        let origin_y = position.y as f64 / scale;
+        let width = size.width as f64 / scale;
+        let height = size.height as f64 / scale;
+        let work_area = monitor.work_area();
+        let work_left = work_area.position.x as f64 / scale - origin_x;
+        let work_top = work_area.position.y as f64 / scale - origin_y;
+        let work_width = work_area.size.width as f64 / scale;
+        let work_height = work_area.size.height as f64 / scale;
+        let persistence_key = monitor_layout_key(&monitor);
+        let zones = saved_layouts
+            .get(&persistence_key)
+            .cloned()
+            .unwrap_or_default();
+
+        sessions.insert(
+            label.clone(),
+            DisplayZones {
+                display_id: display_id.clone(),
+                persistence_key,
+                origin_x,
+                origin_y,
+                zones,
+            },
+        );
+
+        let url = format!(
+            "zone.html?display={display_id}&x={origin_x}&y={origin_y}&width={width}&height={height}&workLeft={work_left}&workTop={work_top}&workWidth={work_width}&workHeight={work_height}"
+        );
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+            .title("Arcane Bridge Zone Mode")
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .position(origin_x, origin_y)
+            .inner_size(width, height)
+            .focused(index == 0)
+            .build()
+            .map_err(|e| format!("create Zone Mode overlay for {display_id}: {e}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn zone_mode_initial(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, ZoneModeState>,
+    hub: tauri::State<'_, HubControl>,
+) -> Result<ZoneModeInitial, String> {
+    let sessions = state.0.lock().map_err(|e| e.to_string())?;
+    let zones = sessions
+        .get(window.label())
+        .map(|session| session.zones.clone())
+        .ok_or_else(|| "unknown Zone Mode overlay".to_string())?;
+    let views = hub
+        .monitor_views()
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect();
+    let assigned_view_ids = sessions
+        .values()
+        .flat_map(|session| session.zones.iter())
+        .filter_map(|zone| zone.view_id.clone())
+        .collect();
+    Ok(ZoneModeInitial {
+        zones,
+        views,
+        assigned_view_ids,
+    })
+}
+
+#[tauri::command]
+pub fn zone_mode_update(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    zones: Vec<ZoneRect>,
+    state: tauri::State<'_, ZoneModeState>,
+    hub: tauri::State<'_, HubControl>,
+) -> Result<(), String> {
+    let mut sessions = state.0.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get_mut(window.label())
+        .ok_or_else(|| "unknown Zone Mode overlay".to_string())?;
+    session.zones = zones;
+    let assigned_view_ids: Vec<String> = sessions
+        .values()
+        .flat_map(|session| session.zones.iter())
+        .filter_map(|zone| zone.view_id.clone())
+        .collect();
+    app.emit(
+        "zone-mode-assignments-updated",
+        serde_json::json!({ "assignedViewIds": assigned_view_ids }),
+    )
+    .map_err(|e| e.to_string())?;
+    hub.configure_monitor_trader_pools("zone-pools-live", trader_pool_payload(&sessions))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn zone_mode_place(
+    window: tauri::WebviewWindow,
+    zone_id: String,
+    view_id: String,
+    state: tauri::State<'_, ZoneModeState>,
+    hub: tauri::State<'_, HubControl>,
+) -> Result<(), String> {
+    let sessions = state.0.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(window.label())
+        .ok_or_else(|| "unknown Zone Mode overlay".to_string())?;
+    let zone = session
+        .zones
+        .iter()
+        .find(|zone| zone.id == zone_id)
+        .ok_or_else(|| "unknown zone".to_string())?;
+    let bounds = serde_json::json!({
+        "x": (session.origin_x + zone.x).round(),
+        "y": (session.origin_y + zone.y).round(),
+        "width": zone.width.round().max(1.0),
+        "height": zone.height.round().max(1.0),
+    });
+    let request_id = format!(
+        "zone-place-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default()
+    );
+    if let Ok(mut placements) = RECENT_PLACEMENTS.lock() {
+        placements.retain(|_, placed_at| placed_at.elapsed() < Duration::from_secs(5));
+        placements.insert(view_id.clone(), Instant::now());
+    }
+    hub.place_monitor_view(
+        &request_id,
+        serde_json::json!({ "viewId": view_id, "bounds": bounds }),
+    )
+}
+
+#[tauri::command]
+pub fn zone_mode_close_view(
+    view_id: String,
+    hub: tauri::State<'_, HubControl>,
+) -> Result<(), String> {
+    let request_id = format!(
+        "zone-close-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default()
+    );
+    hub.close_monitor_view(&request_id, &view_id)
+}
+
+#[tauri::command]
+pub fn zone_mode_cancel(app: AppHandle, state: tauri::State<'_, ZoneModeState>) {
+    if let Ok(mut sessions) = state.0.lock() {
+        sessions.clear();
+    }
+    close_overlays(&app);
+}
+
+#[tauri::command]
+pub fn zone_mode_finish(
+    app: AppHandle,
+    state: tauri::State<'_, ZoneModeState>,
+) -> Result<Vec<PlacedZone>, String> {
+    let sessions = state.0.lock().map_err(|e| e.to_string())?;
+    save_layouts(&app, &sessions)?;
+    let mut placed = Vec::new();
+    for session in sessions.values() {
+        for zone in &session.zones {
+            placed.push(PlacedZone {
+                display_id: session.display_id.clone(),
+                x: session.origin_x + zone.x,
+                y: session.origin_y + zone.y,
+                width: zone.width,
+                height: zone.height,
+            });
+        }
+    }
+    drop(sessions);
+
+    eprintln!("[arcane-bridge] Zone Mode finished: {placed:?}");
+    close_overlays(&app);
+    Ok(placed)
+}

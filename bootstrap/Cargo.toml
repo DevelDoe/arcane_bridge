@@ -1,7 +1,7 @@
 [package]
 name = "arcane_bridge_bootstrap"
 version = "0.1.0"
-description = "Ensure Arcane Bridge is installed and running (piggyback install)"
+description = "Launch Arcane Bridge if installed (users install Bridge themselves)"
 edition = "2021"
 
 [dependencies]

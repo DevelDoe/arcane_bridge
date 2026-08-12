@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arcane Bridge Zone Mode</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; user-select: none; }
+      body {
+        background-color: rgba(5, 11, 17, .76);
+        background-image:
+          linear-gradient(45deg, rgba(83, 154, 190, .10) 25%, transparent 25%),
+          linear-gradient(-45deg, rgba(83, 154, 190, .10) 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, rgba(83, 154, 190, .10) 75%),
+          linear-gradient(-45deg, transparent 75%, rgba(83, 154, 190, .10) 75%);
+        background-size: 48px 48px;
+        background-position: 0 0, 0 24px, 24px -24px, -24px 0;
+      }
+      #canvas { position: fixed; inset: 0; cursor: crosshair; }
+      .zone {
+        position: absolute;
+        min-width: 48px;
+        min-height: 48px;
+        border: 2px solid rgba(75, 205, 255, .9);
+        background: rgba(31, 137, 184, .25);
+        box-shadow: inset 0 0 30px rgba(27, 177, 235, .15), 0 8px 30px rgba(0, 0, 0, .35);
+        cursor: move;
+      }
+      .zone.selected { border-color: #f4c95d; background: rgba(244, 201, 93, .20); }
+      .zone-number {
+        position: absolute; inset: 0; display: grid; place-items: center;
+        font: 700 30px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: rgba(255,255,255,.8); pointer-events: none;
+      }
+      .resize-handle {
+        position: absolute; right: -7px; bottom: -7px; width: 15px; height: 15px;
+        background: #f4c95d; border: 2px solid #101820; cursor: nwse-resize;
+      }
+      #toolbar {
+        position: fixed; z-index: 1000; top: 18px; left: 50%; transform: translateX(-50%);
+        display: flex; align-items: center; gap: 8px; padding: 9px;
+        border: 1px solid rgba(100, 205, 245, .45); border-radius: 9px;
+        background: rgba(7, 15, 22, .94); box-shadow: 0 12px 34px rgba(0,0,0,.45);
+      }
+      #display-name { padding: 0 10px; color: #9edcf3; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+      button {
+        border: 1px solid #31556a; border-radius: 6px; padding: 7px 12px;
+        color: #dff7ff; background: #112633; cursor: pointer;
+      }
+      button:hover { background: #18394a; }
+      button.primary { color: #101820; border-color: #f4c95d; background: #f4c95d; font-weight: 700; }
+      button:disabled { opacity: .4; cursor: default; }
+      select {
+        min-width: 190px; max-width: 280px; padding: 7px 28px 7px 10px;
+        color: #dff7ff; border: 1px solid #31556a; border-radius: 6px; background: #112633;
+      }
+      select:disabled { opacity: .4; }
+      #hint { position: fixed; left: 18px; bottom: 16px; color: rgba(215,240,250,.7); font-size: 12px; }
+      #grid-popover {
+        position: fixed; z-index: 1100; top: 70px; left: 50%; transform: translateX(-50%);
+        width: 280px; padding: 14px; border: 1px solid rgba(100, 205, 245, .45);
+        border-radius: 9px; background: rgba(7, 15, 22, .97); box-shadow: 0 16px 40px rgba(0,0,0,.5);
+      }
+      #grid-popover[hidden] { display: none; }
+      .grid-field { display: grid; grid-template-columns: 1fr 90px; align-items: center; gap: 12px; margin-bottom: 10px; }
+      .grid-field label { color: #b9dce9; font-size: 13px; }
+      .grid-field input {
+        width: 90px; padding: 7px; color: #dff7ff; border: 1px solid #31556a;
+        border-radius: 6px; background: #112633;
+      }
+      .grid-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    </style>
+  </head>
+  <body>
+    <div id="canvas"></div>
+    <div id="toolbar">
+      <span id="display-name"></span>
+      <select id="view-picker" disabled><option value="">Select a view…</option></select>
+      <button id="grid-open">Grid…</button>
+      <button id="delete" disabled>Delete</button>
+      <button id="clear">Clear</button>
+      <button id="cancel">Cancel</button>
+      <button id="done" class="primary">Done</button>
+    </div>
+    <div id="grid-popover" hidden>
+      <div class="grid-field"><label for="grid-columns">Columns</label><input id="grid-columns" type="number" min="1" max="12" value="2" /></div>
+      <div class="grid-field"><label for="grid-rows">Rows</label><input id="grid-rows" type="number" min="1" max="12" value="2" /></div>
+      <div class="grid-field"><label for="grid-gap">Gap (px)</label><input id="grid-gap" type="number" min="0" max="64" value="0" /></div>
+      <div class="grid-actions"><button id="grid-cancel">Cancel</button><button id="grid-apply" class="primary">Apply Grid</button></div>
+    </div>
+    <div id="hint">Drag empty space to create a zone · drag a zone to move · use its corner to resize · Esc cancels</div>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const { listen } = window.__TAURI__.event;
+      const params = new URLSearchParams(location.search);
+      const displayId = params.get("display") || "display";
+      const workArea = {
+        left: Number(params.get("workLeft")) || 0,
+        top: Number(params.get("workTop")) || 0,
+        width: Number(params.get("workWidth")) || innerWidth,
+        height: Number(params.get("workHeight")) || innerHeight,
+      };
+      workArea.right = workArea.left + workArea.width;
+      workArea.bottom = workArea.top + workArea.height;
+      document.querySelector("#display-name").textContent = displayId.replace("-", " ");
+
+      const canvas = document.querySelector("#canvas");
+      const deleteButton = document.querySelector("#delete");
+      const viewPicker = document.querySelector("#view-picker");
+      const hint = document.querySelector("#hint");
+      const gridPopover = document.querySelector("#grid-popover");
+      let zones = [];
+      let views = [];
+      let assignedViewIds = new Set();
+      let selectedId = null;
+      let sequence = 1;
+      let gesture = null;
+      const SNAP_DISTANCE = 12;
+      const TRADER_ACTIVE = "__trader_active";
+      const TRADER_WATCH = "__trader_watch";
+
+      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+      const selected = () => zones.find((zone) => zone.id === selectedId);
+      const sync = () => invoke("zone_mode_update", { zones }).catch(console.error);
+
+      async function placeZone(zone) {
+        if (!zone?.viewId) return;
+        try {
+          await invoke("zone_mode_place", { zoneId: zone.id, viewId: zone.viewId });
+          hint.textContent = `${zone.viewLabel || zone.viewId} placed · continue editing or press Done`;
+        } catch (error) {
+          hint.textContent = `Could not place ${zone.viewLabel || zone.viewId}: ${error}`;
+          console.error("Unable to place Monitor view", error);
+        }
+      }
+
+      async function closeView(viewId) {
+        if (!viewId) return;
+        try {
+          await invoke("zone_mode_close_view", { viewId });
+        } catch (error) {
+          hint.textContent = `Could not close ${viewId}: ${error}`;
+          console.error("Unable to close Monitor view", error);
+        }
+      }
+
+      async function applyFullScreenGrid() {
+        const columns = clamp(Number.parseInt(document.querySelector("#grid-columns").value, 10) || 1, 1, 12);
+        const rows = clamp(Number.parseInt(document.querySelector("#grid-rows").value, 10) || 1, 1, 12);
+        const gap = clamp(Number.parseInt(document.querySelector("#grid-gap").value, 10) || 0, 0, 64);
+        const count = columns * rows;
+        const preserveAssignments = zones.length === count;
+        const previous = zones.slice();
+        const removedViewIds = preserveAssignments ? [] : previous.map((zone) => zone.viewId).filter(Boolean);
+        const availableWidth = Math.max(columns, workArea.width - gap * (columns - 1));
+        const availableHeight = Math.max(rows, workArea.height - gap * (rows - 1));
+        const cellWidth = availableWidth / columns;
+        const cellHeight = availableHeight / rows;
+        const generated = [];
+
+        for (let row = 0; row < rows; row += 1) {
+          for (let column = 0; column < columns; column += 1) {
+            const index = row * columns + column;
+            const old = preserveAssignments ? previous[index] : null;
+            const x = workArea.left + column * (cellWidth + gap);
+            const y = workArea.top + row * (cellHeight + gap);
+            generated.push({
+              id: old?.id || `zone-${sequence++}`,
+              x,
+              y,
+              width: column === columns - 1 ? workArea.right - x : cellWidth,
+              height: row === rows - 1 ? workArea.bottom - y : cellHeight,
+              viewId: old?.viewId || null,
+              viewLabel: old?.viewLabel || null,
+              traderPool: old?.traderPool || null,
+            });
+          }
+        }
+
+        zones = generated;
+        selectedId = zones[0]?.id || null;
+        gridPopover.hidden = true;
+        render();
+        await sync();
+        await Promise.all(removedViewIds.map(closeView));
+        await Promise.all(zones.filter((zone) => zone.viewId).map(placeZone));
+        hint.textContent = `Applied ${columns} × ${rows} full-screen grid${gap ? ` with ${gap}px gaps` : ""}`;
+      }
+
+      function snapEdges(axis, excludedId = selectedId) {
+        const start = axis === "x" ? workArea.left : workArea.top;
+        const limit = axis === "x" ? workArea.right : workArea.bottom;
+        const position = axis === "x" ? "x" : "y";
+        const size = axis === "x" ? "width" : "height";
+        const edges = [start, limit];
+        zones.forEach((zone) => {
+          if (zone.id === excludedId) return;
+          edges.push(zone[position], zone[position] + zone[size]);
+        });
+        return edges;
+      }
+
+      function nearestSnap(value, targets) {
+        let result = value;
+        let closest = SNAP_DISTANCE + 1;
+        targets.forEach((target) => {
+          const distance = Math.abs(value - target);
+          if (distance <= SNAP_DISTANCE && distance < closest) {
+            result = target;
+            closest = distance;
+          }
+        });
+        return result;
+      }
+
+      function snapMovingPosition(value, size, targets) {
+        const candidates = [];
+        targets.forEach((edge) => candidates.push(edge, edge - size));
+        return nearestSnap(value, candidates);
+      }
+
+      function fitZoneToWorkArea(zone) {
+        const left = clamp(zone.x, workArea.left, workArea.right - 1);
+        const top = clamp(zone.y, workArea.top, workArea.bottom - 1);
+        const right = clamp(zone.x + zone.width, left + 1, workArea.right);
+        const bottom = clamp(zone.y + zone.height, top + 1, workArea.bottom);
+        return { ...zone, x: left, y: top, width: right - left, height: bottom - top };
+      }
+
+      function render() {
+        canvas.replaceChildren();
+        zones.forEach((zone, index) => {
+          const el = document.createElement("div");
+          el.className = `zone${zone.id === selectedId ? " selected" : ""}`;
+          el.dataset.id = zone.id;
+          Object.assign(el.style, { left: `${zone.x}px`, top: `${zone.y}px`, width: `${zone.width}px`, height: `${zone.height}px` });
+          const title = zone.traderPool === "active"
+            ? "Trader View · Active/User"
+            : zone.traderPool === "watch"
+              ? "Trader View · Watchlist"
+              : zone.viewLabel || `Zone ${index + 1}`;
+          el.innerHTML = `<span class="zone-number">${title}</span><span class="resize-handle"></span>`;
+          canvas.append(el);
+        });
+        deleteButton.disabled = !selected();
+        viewPicker.disabled = !selected();
+        renderViewPicker();
+      }
+
+      function renderViewPicker() {
+        const selectedZone = selected();
+        const currentViewId = selectedZone?.traderPool === "active"
+          ? TRADER_ACTIVE
+          : selectedZone?.traderPool === "watch"
+            ? TRADER_WATCH
+            : selectedZone?.viewId || null;
+        viewPicker.replaceChildren(new Option("Select a view or slot type…", ""));
+        const traderGroup = document.createElement("optgroup");
+        traderGroup.label = "Trader View slots";
+        traderGroup.append(
+          new Option("Active/User chart slot", TRADER_ACTIVE),
+          new Option("Watchlist chart slot", TRADER_WATCH),
+        );
+        viewPicker.append(traderGroup);
+        const monitorGroup = document.createElement("optgroup");
+        monitorGroup.label = "Monitor views";
+        views
+          .filter((view) => view.id === currentViewId || !assignedViewIds.has(view.id))
+          .forEach((view) => monitorGroup.append(new Option(view.label, view.id)));
+        viewPicker.append(monitorGroup);
+        viewPicker.value = currentViewId || "";
+      }
+
+      canvas.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        const zoneEl = event.target.closest(".zone");
+        if (zoneEl) {
+          selectedId = zoneEl.dataset.id;
+          const zone = selected();
+          gesture = {
+            type: event.target.classList.contains("resize-handle") ? "resize" : "move",
+            startX: event.clientX, startY: event.clientY,
+            original: { ...zone }
+          };
+        } else {
+          const id = `zone-${sequence++}`;
+          selectedId = id;
+          const startX = clamp(event.clientX, workArea.left, workArea.right);
+          const startY = clamp(event.clientY, workArea.top, workArea.bottom);
+          zones.push({ id, x: startX, y: startY, width: 1, height: 1, viewId: null, viewLabel: null, traderPool: null });
+          gesture = { type: "create", startX, startY, id };
+        }
+        canvas.setPointerCapture(event.pointerId);
+        render();
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        if (!gesture) return;
+        const zone = selected();
+        if (!zone) return;
+        const dx = event.clientX - gesture.startX;
+        const dy = event.clientY - gesture.startY;
+        if (gesture.type === "create") {
+          const endX = nearestSnap(clamp(event.clientX, workArea.left, workArea.right), snapEdges("x", zone.id));
+          const endY = nearestSnap(clamp(event.clientY, workArea.top, workArea.bottom), snapEdges("y", zone.id));
+          zone.x = Math.min(gesture.startX, endX);
+          zone.y = Math.min(gesture.startY, endY);
+          zone.width = Math.max(1, Math.abs(endX - gesture.startX));
+          zone.height = Math.max(1, Math.abs(endY - gesture.startY));
+        } else if (gesture.type === "move") {
+          const proposedX = clamp(gesture.original.x + dx, workArea.left, workArea.right - zone.width);
+          const proposedY = clamp(gesture.original.y + dy, workArea.top, workArea.bottom - zone.height);
+          zone.x = clamp(snapMovingPosition(proposedX, zone.width, snapEdges("x")), workArea.left, workArea.right - zone.width);
+          zone.y = clamp(snapMovingPosition(proposedY, zone.height, snapEdges("y")), workArea.top, workArea.bottom - zone.height);
+        } else {
+          const proposedRight = zone.x + gesture.original.width + dx;
+          const proposedBottom = zone.y + gesture.original.height + dy;
+          const snappedRight = nearestSnap(proposedRight, snapEdges("x"));
+          const snappedBottom = nearestSnap(proposedBottom, snapEdges("y"));
+          zone.width = clamp(snappedRight - zone.x, 48, workArea.right - zone.x);
+          zone.height = clamp(snappedBottom - zone.y, 48, workArea.bottom - zone.y);
+        }
+        render();
+      });
+
+      canvas.addEventListener("pointerup", () => {
+        if (!gesture) return;
+        const zone = selected();
+        if (zone && (zone.width < 48 || zone.height < 48)) zones = zones.filter((item) => item.id !== zone.id);
+        gesture = null;
+        render();
+        sync();
+        if (zone && zones.includes(zone)) placeZone(zone);
+      });
+
+      deleteButton.addEventListener("click", async () => {
+        const removedViewId = selected()?.viewId;
+        zones = zones.filter((zone) => zone.id !== selectedId);
+        selectedId = null;
+        render(); await sync();
+        await closeView(removedViewId);
+      });
+      viewPicker.addEventListener("change", async () => {
+        const zone = selected();
+        if (!zone) return;
+        const previousViewId = zone.viewId;
+        const selectedValue = viewPicker.value;
+        const traderPool = selectedValue === TRADER_ACTIVE ? "active" : selectedValue === TRADER_WATCH ? "watch" : null;
+        const view = traderPool ? null : views.find((item) => item.id === selectedValue);
+        zone.viewId = view?.id || null;
+        zone.viewLabel = view?.label || null;
+        zone.traderPool = traderPool;
+        render();
+        await sync();
+        if (previousViewId && previousViewId !== view?.id) await closeView(previousViewId);
+        if (view) await placeZone(zone);
+      });
+      document.querySelector("#clear").addEventListener("click", async () => {
+        const removedViewIds = zones.map((zone) => zone.viewId).filter(Boolean);
+        zones = [];
+        selectedId = null;
+        render();
+        await sync();
+        await Promise.all(removedViewIds.map(closeView));
+      });
+      document.querySelector("#grid-open").addEventListener("click", () => { gridPopover.hidden = !gridPopover.hidden; });
+      document.querySelector("#grid-cancel").addEventListener("click", () => { gridPopover.hidden = true; });
+      document.querySelector("#grid-apply").addEventListener("click", applyFullScreenGrid);
+      document.querySelector("#cancel").addEventListener("click", () => invoke("zone_mode_cancel"));
+      document.querySelector("#done").addEventListener("click", async () => {
+        await sync();
+        await Promise.all(zones.filter((zone) => zone.viewId).map(placeZone));
+        const result = await invoke("zone_mode_finish");
+        console.info("Zone Mode bounds", result);
+      });
+      addEventListener("keydown", (event) => {
+        if (event.key === "Escape") invoke("zone_mode_cancel");
+        if ((event.key === "Delete" || event.key === "Backspace") && selected()) deleteButton.click();
+      });
+      invoke("zone_mode_initial")
+        .then((initial) => {
+          zones = Array.isArray(initial?.zones) ? initial.zones.map(fitZoneToWorkArea) : [];
+          views = Array.isArray(initial?.views) ? initial.views : [];
+          assignedViewIds = new Set(Array.isArray(initial?.assignedViewIds) ? initial.assignedViewIds : []);
+          renderViewPicker();
+          sequence = zones.reduce((next, zone) => {
+            const number = Number.parseInt(String(zone.id).replace(/^zone-/, ""), 10);
+            return Number.isFinite(number) ? Math.max(next, number + 1) : next;
+          }, 1);
+          render();
+        })
+        .catch((error) => {
+          console.error(error);
+          render();
+        });
+      listen("zone-mode-view-unzoned", (event) => {
+        const viewId = event.payload?.viewId;
+        if (!viewId) return;
+        assignedViewIds.delete(viewId);
+        let changed = false;
+        zones.forEach((zone) => {
+          if (zone.viewId === viewId) {
+            zone.viewId = null;
+            zone.viewLabel = null;
+            changed = true;
+          }
+        });
+        if (changed) {
+          hint.textContent = `${viewId} was closed or docked in Monitor and removed from its Bridge zone`;
+          render();
+        }
+      }).catch(console.error);
+      listen("zone-mode-assignments-updated", (event) => {
+        assignedViewIds = new Set(
+          Array.isArray(event.payload?.assignedViewIds) ? event.payload.assignedViewIds : [],
+        );
+        render();
+      }).catch(console.error);
+    </script>
+  </body>
+</html>

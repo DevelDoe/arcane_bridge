@@ -8,6 +8,13 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug, Clone)]
+pub enum HubEvent {
+    MonitorConnected,
+    MonitorZonesRequested,
+    MonitorViewUnzoned { view_id: String, cause: String },
+}
+
 pub(crate) type ConnWriter = Arc<dyn Fn(ConnId, &[u8]) + Send + Sync>;
 
 pub struct HubContext {
@@ -19,6 +26,7 @@ pub struct HubContext {
     pub pending_by_request_id: Arc<Mutex<HashMap<String, ConnId>>>,
     pub(crate) write_bytes: ConnWriter,
     pub(crate) notify_status: Arc<dyn Fn(BridgeStatus) + Send + Sync>,
+    pub(crate) notify_event: Arc<dyn Fn(HubEvent) + Send + Sync>,
 }
 
 impl HubContext {
@@ -33,6 +41,20 @@ impl HubContext {
         if let Some(bytes) = encode_json_line(obj) {
             (self.write_bytes)(conn, &bytes);
         }
+    }
+
+    pub(crate) fn send_to_monitor(&self, msg_type: &str, id: &str, payload: Value) -> Result<(), String> {
+        let publisher = self
+            .registry
+            .lock()
+            .ok()
+            .and_then(|r| r.monitor_publisher())
+            .ok_or_else(|| "Arcane Monitor is not connected".to_string())?;
+        self.write(
+            publisher,
+            &json!({ "schema": 1, "type": msg_type, "id": id, "payload": payload }),
+        );
+        Ok(())
     }
 
     fn write_raw_line(&self, conn: ConnId, line: &str) {
@@ -233,6 +255,7 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
                 reg.tag(conn, ClientRole::Monitor, id_ref.unwrap_or("monitor-publisher"));
             }
             ctx.broadcast_admin_status();
+            (ctx.notify_event)(HubEvent::MonitorConnected);
             ctx.write(
                 conn,
                 &json!({
@@ -307,6 +330,40 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
                     "payload": { "ok": true }
                 }),
             );
+        }
+        "monitor.views.publish" => {
+            if let Ok(mut state) = ctx.state.lock() {
+                state.set_monitor_views(&payload);
+            }
+            ctx.write(
+                conn,
+                &json!({
+                    "schema": 1,
+                    "type": "monitor.views.publish.ack",
+                    "id": id_ref,
+                    "payload": { "ok": true }
+                }),
+            );
+        }
+        "monitor.view.unzoned" => {
+            if let Some(view_id) = payload
+                .get("viewId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            {
+                (ctx.notify_event)(HubEvent::MonitorViewUnzoned {
+                    view_id: view_id.to_string(),
+                    cause: payload
+                        .get("cause")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_string(),
+                });
+            }
+        }
+        "monitor.zones.request" => {
+            (ctx.notify_event)(HubEvent::MonitorZonesRequested);
         }
         "feedFocus.publish" => {
             let sym = payload
@@ -629,6 +686,9 @@ const MONITOR_PUBLISH_TYPES: &[&str] = &[
     "session.publish",
     "watchlist.publish",
     "vault.publish",
+    "monitor.views.publish",
+    "monitor.view.unzoned",
+    "monitor.zones.request",
 ];
 
 pub fn is_forward_to_monitor(msg_type: &str) -> bool {

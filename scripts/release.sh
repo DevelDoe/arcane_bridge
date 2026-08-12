@@ -92,5 +92,5 @@ run git -C "${GIT_ROOT}" push origin "${BRANCH}"
 run git -C "${GIT_ROOT}" push origin "${TAG}"
 
 echo ""
-echo "✓ ${TAG} pushed. Wait for CI, then:"
-echo "  ./scripts/stage-from-github-release.sh"
+echo "✓ ${TAG} pushed. Wait for CI, then install from the GitHub Release."
+echo "  Companion apps no longer stage Bridge installers."

@@ -1,9 +1,14 @@
 //! In-app updates via tauri-plugin-updater (GitHub Releases JSON).
+//! Auto-check on boot and every hour; tray menu can still trigger a manual check.
+
+use std::time::Duration;
 
 use tauri::AppHandle;
 
 #[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
+
+const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[cfg(desktop)]
 pub async fn check_and_install(app: &AppHandle) -> Result<(), String> {
@@ -35,7 +40,23 @@ pub async fn check_and_install(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Boot check, then poll once per hour. Silent when already up to date.
+#[cfg(desktop)]
+pub fn spawn_auto_updater(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if let Err(e) = check_and_install(&app).await {
+                eprintln!("[arcane-bridge] auto-update: {e}");
+            }
+            tokio::time::sleep(AUTO_UPDATE_INTERVAL).await;
+        }
+    });
+}
+
 #[cfg(not(desktop))]
 pub async fn check_and_install(_app: &AppHandle) -> Result<(), String> {
     Err("Updates are not available on this platform.".into())
 }
+
+#[cfg(not(desktop))]
+pub fn spawn_auto_updater(_app: AppHandle) {}
