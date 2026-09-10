@@ -281,9 +281,13 @@
           traderGroup.append(activeOption, new Option("Watchlist chart slot", TRADER_WATCH));
           viewPicker.append(traderGroup);
         }
-        app.views
-          .filter((view) => view.id === currentViewId || !assignedViewIds.has(view.id))
-          .forEach((view) => viewPicker.append(new Option(view.label, view.id)));
+        const availableViews = app.views.filter((view) => view.id === currentViewId || !assignedViewIds.has(view.id));
+        availableViews.forEach((view) => viewPicker.append(new Option(view.label, view.id)));
+        if (!availableViews.length) {
+          const empty = new Option(app.views.length ? "All views are assigned" : "Waiting for views…", "");
+          empty.disabled = true;
+          viewPicker.append(empty);
+        }
         viewPicker.value = currentViewId || "";
       }
 
@@ -407,12 +411,19 @@
         if (event.key === "Escape") invoke("zone_mode_cancel");
         if ((event.key === "Delete" || event.key === "Backspace") && selected()) deleteButton.click();
       });
-      invoke("zone_mode_initial")
+      let receivedLiveApps = false;
+      listen("zone-mode-apps-updated", (event) => {
+        receivedLiveApps = true;
+        apps = Array.isArray(event.payload) ? event.payload : [];
+        renderAppPicker();
+        renderViewPicker();
+      })
+        .then(() => invoke("zone_mode_initial"))
         .then((initial) => {
           zones = Array.isArray(initial?.zones)
             ? initial.zones.map((zone) => fitZoneToWorkArea({ appId: "monitor", ...zone }))
             : [];
-          apps = Array.isArray(initial?.apps) ? initial.apps : [];
+          if (!receivedLiveApps) apps = Array.isArray(initial?.apps) ? initial.apps : [];
           assignedViewIds = new Set(Array.isArray(initial?.assignedViewIds) ? initial.assignedViewIds : []);
           renderAppPicker();
           renderViewPicker();

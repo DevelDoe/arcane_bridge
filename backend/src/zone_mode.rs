@@ -7,7 +7,10 @@ use std::{
     sync::{LazyLock, Mutex},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
+    WebviewWindowBuilder,
+};
 
 use crate::hub_runtime::HubControl;
 
@@ -445,14 +448,36 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
     close_overlays(app);
 
     let monitors = app.available_monitors().map_err(|e| e.to_string())?;
+    eprintln!(
+        "[arcane-bridge] Zone Mode: {} monitor(s) from available_monitors()",
+        monitors.len()
+    );
+    for (index, monitor) in monitors.iter().enumerate() {
+        let position = monitor.position();
+        let size = monitor.size();
+        let work_area = monitor.work_area();
+        eprintln!(
+            "[arcane-bridge] Zone Mode monitor[{index}]: name={:?} pos={}x{} size={}x{} scale={} work_pos={}x{} work_size={}x{}",
+            monitor.name(),
+            position.x,
+            position.y,
+            size.width,
+            size.height,
+            monitor.scale_factor(),
+            work_area.position.x,
+            work_area.position.y,
+            work_area.size.width,
+            work_area.size.height
+        );
+    }
     if monitors.is_empty() {
         return Err("no displays available for Zone Mode".into());
     }
 
     let saved_layouts = load_layouts(app);
     let state = app.state::<ZoneModeState>();
-    let mut sessions = state.0.lock().map_err(|e| e.to_string())?;
-    sessions.clear();
+    let mut sessions = HashMap::new();
+    let mut overlays = Vec::with_capacity(monitors.len());
 
     for (index, monitor) in monitors.into_iter().enumerate() {
         let label = format!("{ZONE_LABEL_PREFIX}{index}");
@@ -489,7 +514,22 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
         let url = format!(
             "zone.html?display={display_id}&x={origin_x}&y={origin_y}&width={width}&height={height}&workLeft={work_left}&workTop={work_top}&workWidth={work_width}&workHeight={work_height}"
         );
-        WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+        overlays.push((index, label, display_id, url, *position, *size));
+    }
+
+    // WebView2 creation pumps Windows messages, including IPC from earlier
+    // overlays. Publish every session and release the mutex before building
+    // any window so zone_mode_initial cannot deadlock on this thread.
+    *state.0.lock().map_err(|e| e.to_string())? = sessions;
+
+    for (index, label, display_id, url, position, size) in overlays {
+        eprintln!(
+            "[arcane-bridge] Zone Mode: creating overlay {label} for {display_id} at physical {}x{} {}x{}",
+            position.x, position.y, size.width, size.height
+        );
+        // Initialize hidden at the primary origin, then apply the target display's
+        // physical bounds before showing the transparent overlay.
+        let overlay = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
             .title("Arcane Bridge Zone Mode")
             .decorations(false)
             .transparent(true)
@@ -497,27 +537,34 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
             .always_on_top(true)
             .skip_taskbar(true)
             .resizable(false)
-            .position(origin_x, origin_y)
-            .inner_size(width, height)
-            .focused(index == 0)
+            .visible(false)
+            .position(0.0, 0.0)
+            .inner_size(800.0, 600.0)
+            .focused(false)
             .build()
             .map_err(|e| format!("create Zone Mode overlay for {display_id}: {e}"))?;
+        overlay
+            .set_position(Position::Physical(PhysicalPosition::new(
+                position.x,
+                position.y,
+            )))
+            .map_err(|e| format!("position Zone Mode overlay for {display_id}: {e}"))?;
+        overlay
+            .set_size(Size::Physical(PhysicalSize::new(size.width, size.height)))
+            .map_err(|e| format!("size Zone Mode overlay for {display_id}: {e}"))?;
+        overlay
+            .show()
+            .map_err(|e| format!("show Zone Mode overlay for {display_id}: {e}"))?;
+        if index == 0 {
+            let _ = overlay.set_focus();
+        }
+        eprintln!("[arcane-bridge] Zone Mode: overlay {label} ready");
     }
 
     Ok(())
 }
 
-#[tauri::command]
-pub fn zone_mode_initial(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, ZoneModeState>,
-    hub: tauri::State<'_, HubControl>,
-) -> Result<ZoneModeInitial, String> {
-    let sessions = state.0.lock().map_err(|e| e.to_string())?;
-    let zones = sessions
-        .get(window.label())
-        .map(|session| session.zones.clone())
-        .ok_or_else(|| "unknown Zone Mode overlay".to_string())?;
+pub fn zone_apps(hub: &HubControl) -> Vec<ZoneApp> {
     let monitor_views = hub
         .monitor_views()
         .into_iter()
@@ -555,6 +602,21 @@ pub fn zone_mode_initial(
             ],
         });
     }
+    apps
+}
+
+#[tauri::command]
+pub fn zone_mode_initial(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, ZoneModeState>,
+    hub: tauri::State<'_, HubControl>,
+) -> Result<ZoneModeInitial, String> {
+    let sessions = state.0.lock().map_err(|e| e.to_string())?;
+    let zones = sessions
+        .get(window.label())
+        .map(|session| session.zones.clone())
+        .ok_or_else(|| "unknown Zone Mode overlay".to_string())?;
+    let apps = zone_apps(&hub);
     let assigned_view_ids = assigned_zone_ids(&sessions, hub.monitor_active_pool());
     Ok(ZoneModeInitial {
         zones,
@@ -594,7 +656,9 @@ pub fn zone_mode_update(
         serde_json::json!({ "assignedViewIds": assigned_view_ids }),
     )
     .map_err(|e| e.to_string())?;
-    hub.configure_monitor_trader_pools("zone-pools-live", trader_pool_payload(&sessions))?;
+    if hub.monitor_connected() {
+        hub.configure_monitor_trader_pools("zone-pools-live", trader_pool_payload(&sessions))?;
+    }
     Ok(())
 }
 

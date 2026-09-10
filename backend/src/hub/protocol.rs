@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 pub enum HubEvent {
     MonitorConnected,
     GuildsConnected,
+    MonitorViewsChanged,
     MonitorZonesRequested,
     MonitorViewUnzoned { view_id: String, cause: String },
     MonitorTraderPoolUnzoned { pool: String },
@@ -225,6 +226,7 @@ impl HubContext {
         if let Ok(mut state) = self.state.lock() {
             state.clear_monitor_publisher_state();
         }
+        (self.notify_event)(HubEvent::MonitorViewsChanged);
         self.broadcast_watchlist();
         self.broadcast_vault();
         self.broadcast_admin_status();
@@ -373,6 +375,7 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
             if let Ok(mut state) = ctx.state.lock() {
                 state.set_monitor_views(&payload);
             }
+            (ctx.notify_event)(HubEvent::MonitorViewsChanged);
             ctx.write(
                 conn,
                 &json!({

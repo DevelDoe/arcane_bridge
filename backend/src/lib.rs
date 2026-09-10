@@ -19,7 +19,7 @@ pub use shell_visibility::prepare_windows_tray_process;
 use std::sync::{mpsc::Receiver, Arc, Mutex};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use zone_mode::ZoneModeState;
 
 const TRAY_ID: &str = "arcane-bridge-tray";
@@ -132,6 +132,8 @@ fn spawn_status_listener(app: AppHandle, rx: Receiver<BridgeStatus>, state: Shar
                 }
                 refresh_tray_menu(&handle, &status);
                 emit_console_update(&handle, &state);
+                let apps = zone_mode::zone_apps(&handle.state::<hub_runtime::HubControl>());
+                let _ = handle.emit("zone-mode-apps-updated", apps);
             });
         }
     });
@@ -159,6 +161,10 @@ fn spawn_hub_event_listener(app: AppHandle, rx: Receiver<HubEvent>) {
                     if let Err(error) = zone_mode::hydrate_monitor_views(&handle) {
                         eprintln!("[arcane-bridge] hydrate Monitor zoning: {error}");
                     }
+                }
+                HubEvent::MonitorViewsChanged => {
+                    let apps = zone_mode::zone_apps(&handle.state::<hub_runtime::HubControl>());
+                    let _ = handle.emit("zone-mode-apps-updated", apps);
                 }
                 HubEvent::MonitorViewUnzoned { view_id, cause } => {
                     if let Err(error) = zone_mode::unassign_monitor_view(&handle, &view_id, &cause)

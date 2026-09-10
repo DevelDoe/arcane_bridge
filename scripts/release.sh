@@ -33,7 +33,7 @@ if [[ -z "${GIT_ROOT}" ]] || ! git -C "${GIT_ROOT}" rev-parse --is-inside-work-t
   exit 1
 fi
 
-CURRENT="$(node -p "require('${BRIDGE_ROOT}/backend/tauri.conf.json').version")"
+CURRENT="$(node -p 'require(process.argv[1]).version' "${BRIDGE_ROOT}/backend/tauri.conf.json")"
 VERSION="$(node -e "
   const v = '${CURRENT}'.split('-')[0].split('.').map(Number);
   const bump = '${BUMP}';
