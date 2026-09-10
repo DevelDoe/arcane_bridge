@@ -1,9 +1,11 @@
 //! In-process TCP hub — one Arcane Bridge executable, no separate hub process.
 
 use crate::bridge_admin::BridgeStatus;
-use crate::hub::connections::{ConnectionRegistry, ConnId};
+use crate::hub::connections::{ConnId, ConnectionRegistry};
 use crate::hub::io::write_bytes_to_stream;
-use crate::hub::protocol::{handle_client_line, handle_monitor_publisher_line, ConnWriter, HubContext, HubEvent};
+use crate::hub::protocol::{
+    handle_client_line, handle_monitor_publisher_line, ConnWriter, HubContext, HubEvent,
+};
 use crate::hub::state::HubState;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -27,6 +29,26 @@ pub struct HubControl {
 }
 
 impl HubControl {
+    pub fn monitor_connected(&self) -> bool {
+        self.ctx
+            .registry
+            .lock()
+            .ok()
+            .and_then(|registry| registry.monitor_publisher())
+            .is_some()
+    }
+
+    pub fn guilds_connected(&self) -> bool {
+        self.ctx
+            .registry
+            .lock()
+            .ok()
+            .and_then(|registry| {
+                registry.connection_for_role(crate::hub::connections::ClientRole::Guilds)
+            })
+            .is_some()
+    }
+
     pub fn monitor_views(&self) -> Vec<serde_json::Value> {
         self.ctx
             .state
@@ -35,12 +57,20 @@ impl HubControl {
             .unwrap_or_default()
     }
 
-    pub fn place_monitor_view(&self, request_id: &str, payload: serde_json::Value) -> Result<(), String> {
+    pub fn place_monitor_view(
+        &self,
+        request_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
         self.ctx
             .send_to_monitor("monitor.view.place", request_id, payload)
     }
 
-    pub fn hydrate_monitor_zones(&self, request_id: &str, placements: serde_json::Value) -> Result<(), String> {
+    pub fn hydrate_monitor_zones(
+        &self,
+        request_id: &str,
+        placements: serde_json::Value,
+    ) -> Result<(), String> {
         self.ctx.send_to_monitor(
             "monitor.zones.hydrate",
             request_id,
@@ -56,12 +86,59 @@ impl HubControl {
         )
     }
 
-    pub fn configure_monitor_trader_pools(&self, request_id: &str, pools: serde_json::Value) -> Result<(), String> {
+    pub fn place_guilds_view(
+        &self,
+        request_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), String> {
+        self.ctx
+            .send_to_guilds("guilds.view.place", request_id, payload)
+    }
+
+    pub fn close_guilds_view(&self, request_id: &str, view_id: &str) -> Result<(), String> {
+        self.ctx.send_to_guilds(
+            "guilds.view.close",
+            request_id,
+            serde_json::json!({ "viewId": view_id }),
+        )
+    }
+
+    pub fn configure_monitor_trader_pools(
+        &self,
+        request_id: &str,
+        pools: serde_json::Value,
+    ) -> Result<(), String> {
         self.ctx.send_to_monitor(
             "monitor.traderZones.configure",
             request_id,
             serde_json::json!({ "pools": pools }),
         )
+    }
+
+    pub fn unassign_monitor_trader_pool(
+        &self,
+        request_id: &str,
+        pool: &str,
+    ) -> Result<(), String> {
+        self.ctx.send_to_monitor(
+            "monitor.traderPool.unassign",
+            request_id,
+            serde_json::json!({ "pool": pool }),
+        )
+    }
+
+    pub fn monitor_active_pool(&self) -> bool {
+        self.ctx
+            .state
+            .lock()
+            .map(|state| state.monitor_active_pool())
+            .unwrap_or(false)
+    }
+
+    pub fn set_monitor_active_pool(&self, claimed: bool) {
+        if let Ok(mut state) = self.ctx.state.lock() {
+            state.set_monitor_active_pool(claimed);
+        }
     }
 }
 

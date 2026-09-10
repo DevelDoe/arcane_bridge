@@ -1,7 +1,12 @@
 //! Platform-wide zoning overlays, one frameless editor per connected display.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, sync::{LazyLock, Mutex}, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    fs,
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
+};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::hub_runtime::HubControl;
@@ -18,12 +23,76 @@ pub struct ZoneRect {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    #[serde(default = "default_app_id")]
+    pub app_id: String,
     #[serde(default)]
     pub view_id: Option<String>,
     #[serde(default)]
     pub view_label: Option<String>,
     #[serde(default)]
     pub trader_pool: Option<String>,
+}
+
+fn default_app_id() -> String {
+    "monitor".to_string()
+}
+
+fn assigned_zone_ids(sessions: &HashMap<String, DisplayZones>, monitor_claimed_active: bool) -> Vec<String> {
+    let mut ids: Vec<String> = sessions
+        .values()
+        .flat_map(|session| session.zones.iter())
+        .filter_map(|zone| zone.view_id.clone())
+        .collect();
+    let bridge_has_active = sessions
+        .values()
+        .flat_map(|session| session.zones.iter())
+        .any(|zone| zone.trader_pool.as_deref() == Some("active"));
+    if monitor_claimed_active || bridge_has_active {
+        ids.push("__trader_active".to_string());
+    }
+    ids
+}
+
+fn take_exclusive_active(sessions: &mut HashMap<String, DisplayZones>, current_label: &str) -> bool {
+    let current_has_active = sessions
+        .get(current_label)
+        .map(|session| {
+            session
+                .zones
+                .iter()
+                .any(|zone| zone.trader_pool.as_deref() == Some("active"))
+        })
+        .unwrap_or(false);
+    if !current_has_active {
+        return false;
+    }
+    for (label, session) in sessions.iter_mut() {
+        let mut seen = false;
+        for zone in &mut session.zones {
+            if zone.trader_pool.as_deref() != Some("active") {
+                continue;
+            }
+            if label != current_label || seen {
+                zone.trader_pool = None;
+            } else {
+                seen = true;
+            }
+        }
+    }
+    true
+}
+
+fn clear_trader_pool(sessions: &mut HashMap<String, DisplayZones>, pool: &str) -> bool {
+    let mut changed = false;
+    for session in sessions.values_mut() {
+        for zone in &mut session.zones {
+            if zone.trader_pool.as_deref() == Some(pool) {
+                zone.trader_pool = None;
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -35,9 +104,17 @@ pub struct MonitorView {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ZoneApp {
+    pub id: String,
+    pub label: String,
+    pub views: Vec<MonitorView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ZoneModeInitial {
     pub zones: Vec<ZoneRect>,
-    pub views: Vec<MonitorView>,
+    pub apps: Vec<ZoneApp>,
     pub assigned_view_ids: Vec<String>,
 }
 
@@ -84,6 +161,9 @@ fn trader_pool_payload(sessions: &HashMap<String, DisplayZones>) -> serde_json::
     let mut watch = Vec::new();
     for session in sessions.values() {
         for zone in &session.zones {
+            if zone.app_id != "monitor" {
+                continue;
+            }
             let target = match zone.trader_pool.as_deref() {
                 Some("active") => &mut active,
                 Some("watch") => &mut watch,
@@ -153,7 +233,7 @@ pub fn unassign_monitor_view(app: &AppHandle, view_id: &str, cause: &str) -> Res
     if let Ok(mut sessions) = state.0.lock() {
         for session in sessions.values_mut() {
             for zone in &mut session.zones {
-                if zone.view_id.as_deref() == Some(view_id) {
+                if zone.app_id == "monitor" && zone.view_id.as_deref() == Some(view_id) {
                     zone.view_id = None;
                     zone.view_label = None;
                 }
@@ -164,7 +244,7 @@ pub fn unassign_monitor_view(app: &AppHandle, view_id: &str, cause: &str) -> Res
     let mut saved = load_layouts(app);
     for zones in saved.values_mut() {
         for zone in zones {
-            if zone.view_id.as_deref() == Some(view_id) {
+            if zone.app_id == "monitor" && zone.view_id.as_deref() == Some(view_id) {
                 zone.view_id = None;
                 zone.view_label = None;
             }
@@ -180,8 +260,65 @@ pub fn unassign_monitor_view(app: &AppHandle, view_id: &str, cause: &str) -> Res
     )
     .map_err(|e| e.to_string())?;
 
-    app.emit("zone-mode-view-unzoned", serde_json::json!({ "viewId": view_id }))
-        .map_err(|e| e.to_string())
+    app.emit(
+        "zone-mode-view-unzoned",
+        serde_json::json!({ "viewId": view_id }),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn refresh_assigned_view_ids(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<ZoneModeState>();
+    let hub = app.state::<HubControl>();
+    let sessions = state.0.lock().map_err(|e| e.to_string())?;
+    let assigned_view_ids = assigned_zone_ids(&sessions, hub.monitor_active_pool());
+    app.emit(
+        "zone-mode-assignments-updated",
+        serde_json::json!({ "assignedViewIds": assigned_view_ids }),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn unassign_monitor_trader_pool(app: &AppHandle, pool: &str) -> Result<(), String> {
+    if pool != "active" {
+        return Ok(());
+    }
+    let state = app.state::<ZoneModeState>();
+    let hub = app.state::<HubControl>();
+    if let Ok(mut sessions) = state.0.lock() {
+        clear_trader_pool(&mut sessions, pool);
+        let _ = hub.configure_monitor_trader_pools("zone-pools-unassign", trader_pool_payload(&sessions));
+        let assigned_view_ids = assigned_zone_ids(&sessions, true);
+        app.emit(
+            "zone-mode-assignments-updated",
+            serde_json::json!({ "assignedViewIds": assigned_view_ids }),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let mut saved = load_layouts(app);
+    for zones in saved.values_mut() {
+        for zone in zones {
+            if zone.trader_pool.as_deref() == Some(pool) {
+                zone.trader_pool = None;
+            }
+        }
+    }
+    let path = layouts_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(
+        path,
+        serde_json::to_string_pretty(&saved).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    app.emit(
+        "zone-mode-trader-pool-unzoned",
+        serde_json::json!({ "pool": pool }),
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub fn hydrate_monitor_views(app: &AppHandle) -> Result<(), String> {
@@ -200,6 +337,9 @@ pub fn hydrate_monitor_views(app: &AppHandle) -> Result<(), String> {
         let origin_x = position.x as f64 / scale;
         let origin_y = position.y as f64 / scale;
         for zone in zones {
+            if zone.app_id != "monitor" {
+                continue;
+            }
             let Some(view_id) = zone.view_id.as_deref() else {
                 continue;
             };
@@ -227,10 +367,7 @@ pub fn hydrate_monitor_views(app: &AppHandle) -> Result<(), String> {
     );
     let count = placements.len();
     let hub = app.state::<HubControl>();
-    hub.hydrate_monitor_zones(
-        &request_id,
-        serde_json::Value::Array(placements),
-    )?;
+    hub.hydrate_monitor_zones(&request_id, serde_json::Value::Array(placements))?;
     // Build the same pool snapshot from the saved layouts for boot hydration.
     let mut pool_sessions = HashMap::new();
     for monitor in app.available_monitors().map_err(|e| e.to_string())? {
@@ -253,6 +390,46 @@ pub fn hydrate_monitor_views(app: &AppHandle) -> Result<(), String> {
     }
     hub.configure_monitor_trader_pools(&request_id, trader_pool_payload(&pool_sessions))?;
     eprintln!("[arcane-bridge] hydrated {count} Monitor zone assignment(s)");
+    Ok(())
+}
+
+pub fn hydrate_guilds_views(app: &AppHandle) -> Result<(), String> {
+    let saved = load_layouts(app);
+    let hub = app.state::<HubControl>();
+    let mut count = 0usize;
+    for monitor in app.available_monitors().map_err(|e| e.to_string())? {
+        let key = monitor_layout_key(&monitor);
+        let Some(zones) = saved.get(&key) else {
+            continue;
+        };
+        let scale = monitor.scale_factor();
+        let position = monitor.position();
+        let origin_x = position.x as f64 / scale;
+        let origin_y = position.y as f64 / scale;
+        for zone in zones {
+            if zone.app_id != "guilds" {
+                continue;
+            }
+            let Some(view_id) = zone.view_id.as_deref() else {
+                continue;
+            };
+            let request_id = format!("guilds-zone-hydrate-{view_id}-{count}");
+            hub.place_guilds_view(
+                &request_id,
+                serde_json::json!({
+                    "viewId": view_id,
+                    "bounds": {
+                        "x": (origin_x + zone.x).round(),
+                        "y": (origin_y + zone.y).round(),
+                        "width": zone.width.round().max(1.0),
+                        "height": zone.height.round().max(1.0),
+                    }
+                }),
+            )?;
+            count += 1;
+        }
+    }
+    eprintln!("[arcane-bridge] hydrated {count} Guilds zone assignment(s)");
     Ok(())
 }
 
@@ -341,19 +518,47 @@ pub fn zone_mode_initial(
         .get(window.label())
         .map(|session| session.zones.clone())
         .ok_or_else(|| "unknown Zone Mode overlay".to_string())?;
-    let views = hub
+    let monitor_views = hub
         .monitor_views()
         .into_iter()
         .filter_map(|value| serde_json::from_value(value).ok())
         .collect();
-    let assigned_view_ids = sessions
-        .values()
-        .flat_map(|session| session.zones.iter())
-        .filter_map(|zone| zone.view_id.clone())
-        .collect();
+    let mut apps = Vec::new();
+    if hub.monitor_connected() {
+        apps.push(ZoneApp {
+            id: "monitor".into(),
+            label: "Arcane Monitor".into(),
+            views: monitor_views,
+        });
+    }
+    if hub.guilds_connected() {
+        apps.push(ZoneApp {
+            id: "guilds".into(),
+            label: "Arcane Guilds".into(),
+            views: vec![
+                MonitorView {
+                    id: "sidebar".into(),
+                    label: "Navigation".into(),
+                },
+                MonitorView {
+                    id: "chat".into(),
+                    label: "Chat".into(),
+                },
+                MonitorView {
+                    id: "header".into(),
+                    label: "Header".into(),
+                },
+                MonitorView {
+                    id: "toplist".into(),
+                    label: "Focus & Watchlist".into(),
+                },
+            ],
+        });
+    }
+    let assigned_view_ids = assigned_zone_ids(&sessions, hub.monitor_active_pool());
     Ok(ZoneModeInitial {
         zones,
-        views,
+        apps,
         assigned_view_ids,
     })
 }
@@ -367,15 +572,23 @@ pub fn zone_mode_update(
     hub: tauri::State<'_, HubControl>,
 ) -> Result<(), String> {
     let mut sessions = state.0.lock().map_err(|e| e.to_string())?;
-    let session = sessions
-        .get_mut(window.label())
-        .ok_or_else(|| "unknown Zone Mode overlay".to_string())?;
-    session.zones = zones;
-    let assigned_view_ids: Vec<String> = sessions
+    let label = window.label().to_string();
+    if !sessions.contains_key(&label) {
+        return Err("unknown Zone Mode overlay".to_string());
+    }
+    let previously_had_active = sessions
         .values()
         .flat_map(|session| session.zones.iter())
-        .filter_map(|zone| zone.view_id.clone())
-        .collect();
+        .any(|zone| zone.trader_pool.as_deref() == Some("active"));
+    if let Some(session) = sessions.get_mut(&label) {
+        session.zones = zones;
+    }
+    let stole_active = take_exclusive_active(&mut sessions, &label);
+    if stole_active && !previously_had_active {
+        hub.set_monitor_active_pool(false);
+        let _ = hub.unassign_monitor_trader_pool("zone-active-steal", "active");
+    }
+    let assigned_view_ids = assigned_zone_ids(&sessions, hub.monitor_active_pool());
     app.emit(
         "zone-mode-assignments-updated",
         serde_json::json!({ "assignedViewIds": assigned_view_ids }),
@@ -419,15 +632,17 @@ pub fn zone_mode_place(
         placements.retain(|_, placed_at| placed_at.elapsed() < Duration::from_secs(5));
         placements.insert(view_id.clone(), Instant::now());
     }
-    hub.place_monitor_view(
-        &request_id,
-        serde_json::json!({ "viewId": view_id, "bounds": bounds }),
-    )
+    let payload = serde_json::json!({ "viewId": view_id, "bounds": bounds });
+    match zone.app_id.as_str() {
+        "guilds" => hub.place_guilds_view(&request_id, payload),
+        _ => hub.place_monitor_view(&request_id, payload),
+    }
 }
 
 #[tauri::command]
 pub fn zone_mode_close_view(
     view_id: String,
+    app_id: Option<String>,
     hub: tauri::State<'_, HubControl>,
 ) -> Result<(), String> {
     let request_id = format!(
@@ -437,7 +652,10 @@ pub fn zone_mode_close_view(
             .map(|duration| duration.as_millis())
             .unwrap_or_default()
     );
-    hub.close_monitor_view(&request_id, &view_id)
+    match app_id.as_deref() {
+        Some("guilds") => hub.close_guilds_view(&request_id, &view_id),
+        _ => hub.close_monitor_view(&request_id, &view_id),
+    }
 }
 
 #[tauri::command]

@@ -9,16 +9,18 @@ mod zone_mode;
 
 use bridge_admin::BridgeStatus;
 use console_window::{emit_console_update, open_console, ConsoleState, SharedConsoleState};
-use hub_runtime::{acquire_singleton_lock, bridge_host_from_env, bridge_port_from_env, start_in_process_hub};
+use hub_runtime::{
+    acquire_singleton_lock, bridge_host_from_env, bridge_port_from_env, start_in_process_hub,
+};
 use shell_visibility::apply_tray_only_shell;
 
+use hub_runtime::HubEvent;
 pub use shell_visibility::prepare_windows_tray_process;
 use std::sync::{mpsc::Receiver, Arc, Mutex};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, RunEvent};
 use zone_mode::ZoneModeState;
-use hub_runtime::HubEvent;
 
 const TRAY_ID: &str = "arcane-bridge-tray";
 
@@ -27,26 +29,51 @@ fn title_version_line(app: &AppHandle) -> String {
     format!("{}  v{}", pkg.name, pkg.version)
 }
 
-fn build_tray_menu(app: &AppHandle, status: &BridgeStatus) -> Result<Menu<tauri::Wry>, tauri::Error> {
+fn build_tray_menu(
+    app: &AppHandle,
+    status: &BridgeStatus,
+) -> Result<Menu<tauri::Wry>, tauri::Error> {
     let title = MenuItem::with_id(app, "title", title_version_line(app), false, None::<&str>)?;
-    let console =
-        MenuItem::with_id(app, "console", "Bridge Console…", true, None::<&str>)?;
-    let check_updates =
-        MenuItem::with_id(app, "check_updates", "Check for updates…", true, None::<&str>)?;
+    let console = MenuItem::with_id(app, "console", "Bridge Console…", true, None::<&str>)?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Check for updates…",
+        true,
+        None::<&str>,
+    )?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Arcane Bridge", true, None::<&str>)?;
 
     let mut connected: Vec<MenuItem<tauri::Wry>> = Vec::new();
-    if status.apps.monitor {
-        connected.push(MenuItem::with_id(app, "zone_monitor", "Zone Monitor…", true, None::<&str>)?);
+    if status.apps.monitor || status.apps.guilds {
+        connected.push(MenuItem::with_id(
+            app,
+            "zoning",
+            "Arcane Zoning",
+            true,
+            None::<&str>,
+        )?);
     }
     if status.apps.caster {
-        connected.push(MenuItem::with_id(app, "caster", "Caster", false, None::<&str>)?);
+        connected.push(MenuItem::with_id(
+            app,
+            "caster",
+            "Caster",
+            false,
+            None::<&str>,
+        )?);
     }
     if status.apps.guilds {
-        connected.push(MenuItem::with_id(app, "guilds", "Guilds", false, None::<&str>)?);
+        connected.push(MenuItem::with_id(
+            app,
+            "guilds",
+            "Guilds",
+            false,
+            None::<&str>,
+        )?);
     }
 
     let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&title];
@@ -114,7 +141,10 @@ fn spawn_hub_event_listener(app: AppHandle, rx: Receiver<HubEvent>) {
     std::thread::spawn(move || {
         let mut last_hydration: Option<std::time::Instant> = None;
         while let Ok(event) = rx.recv() {
-            if matches!(event, HubEvent::MonitorConnected | HubEvent::MonitorZonesRequested) {
+            if matches!(
+                event,
+                HubEvent::MonitorConnected | HubEvent::MonitorZonesRequested
+            ) {
                 let now = std::time::Instant::now();
                 if last_hydration.is_some_and(|previous| {
                     now.duration_since(previous) < std::time::Duration::from_millis(500)
@@ -131,8 +161,24 @@ fn spawn_hub_event_listener(app: AppHandle, rx: Receiver<HubEvent>) {
                     }
                 }
                 HubEvent::MonitorViewUnzoned { view_id, cause } => {
-                    if let Err(error) = zone_mode::unassign_monitor_view(&handle, &view_id, &cause) {
+                    if let Err(error) = zone_mode::unassign_monitor_view(&handle, &view_id, &cause)
+                    {
                         eprintln!("[arcane-bridge] unassign Monitor view: {error}");
+                    }
+                }
+                HubEvent::MonitorTraderPoolUnzoned { pool } => {
+                    if let Err(error) = zone_mode::unassign_monitor_trader_pool(&handle, &pool) {
+                        eprintln!("[arcane-bridge] unassign Monitor trader pool: {error}");
+                    }
+                }
+                HubEvent::MonitorTraderPoolsPublished => {
+                    if let Err(error) = zone_mode::refresh_assigned_view_ids(&handle) {
+                        eprintln!("[arcane-bridge] refresh Zone Mode assignments: {error}");
+                    }
+                }
+                HubEvent::GuildsConnected => {
+                    if let Err(error) = zone_mode::hydrate_guilds_views(&handle) {
+                        eprintln!("[arcane-bridge] hydrate Guilds zoning: {error}");
                     }
                 }
             });
@@ -169,10 +215,11 @@ pub fn run() {
             app.set_dock_visibility(false);
 
             let bridge_version = app.package_info().version.to_string();
-            let (hub_rx, hub_event_rx, hub_control) = start_in_process_hub(&bridge_version).map_err(|e| {
-                eprintln!("[arcane-bridge] hub start: {e}");
-                std::io::Error::other(e)
-            })?;
+            let (hub_rx, hub_event_rx, hub_control) = start_in_process_hub(&bridge_version)
+                .map_err(|e| {
+                    eprintln!("[arcane-bridge] hub start: {e}");
+                    std::io::Error::other(e)
+                })?;
             app.manage(hub_control);
 
             let initial = BridgeStatus {
@@ -202,36 +249,33 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("Arcane Bridge")
                 .show_menu_on_left_click(true)
-                .on_menu_event(move |app, event| {
-                    match event.id().as_ref() {
-                        "console" => {
-                            let state = tray_state.clone();
-                            let app_for_thread = app.clone();
-                            let _ = app.run_on_main_thread(move || {
-                                if let Err(e) = open_console(&app_for_thread, &state) {
-                                    eprintln!("[arcane-bridge] console: {e}");
-                                }
-                            });
-                        }
-                        "check_updates" => {
-                            let app_for_update = app.clone();
-                            tauri::async_runtime::spawn(async move {
-                                if let Err(e) = updates::check_and_install(&app_for_update).await
-                                {
-                                    eprintln!("[arcane-bridge] update: {e}");
-                                }
-                            });
-                        }
-                        "zone_monitor" => {
-                            if let Err(e) = zone_mode::start_zone_mode(app) {
-                                eprintln!("[arcane-bridge] Zone Mode: {e}");
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "console" => {
+                        let state = tray_state.clone();
+                        let app_for_thread = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            if let Err(e) = open_console(&app_for_thread, &state) {
+                                eprintln!("[arcane-bridge] console: {e}");
                             }
-                        }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
+                        });
                     }
+                    "check_updates" => {
+                        let app_for_update = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = updates::check_and_install(&app_for_update).await {
+                                eprintln!("[arcane-bridge] update: {e}");
+                            }
+                        });
+                    }
+                    "zoning" => {
+                        if let Err(e) = zone_mode::start_zone_mode(app) {
+                            eprintln!("[arcane-bridge] Zone Mode: {e}");
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
                 })
                 .build(app)?;
 

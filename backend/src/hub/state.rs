@@ -27,6 +27,7 @@ pub struct HubState {
     guilds_feed: Option<Value>,
     monitor_token: Option<String>,
     monitor_views: Vec<Value>,
+    monitor_active_pool: bool,
 }
 
 impl Default for HubState {
@@ -42,6 +43,7 @@ impl Default for HubState {
             guilds_feed: None,
             monitor_token: None,
             monitor_views: Vec::new(),
+            monitor_active_pool: false,
         }
     }
 }
@@ -87,6 +89,14 @@ fn normalize_symbols(arr: Option<&Value>) -> Vec<String> {
 impl HubState {
     pub fn monitor_views(&self) -> Vec<Value> {
         self.monitor_views.clone()
+    }
+
+    pub fn monitor_active_pool(&self) -> bool {
+        self.monitor_active_pool
+    }
+
+    pub fn set_monitor_active_pool(&mut self, claimed: bool) {
+        self.monitor_active_pool = claimed;
     }
 
     pub fn set_monitor_views(&mut self, payload: &Value) {
@@ -241,5 +251,6 @@ impl HubState {
         self.guilds_feed = None;
         self.monitor_token = None;
         self.monitor_views.clear();
+        self.monitor_active_pool = false;
     }
 }

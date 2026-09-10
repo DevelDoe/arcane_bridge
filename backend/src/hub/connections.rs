@@ -118,6 +118,12 @@ impl ConnectionRegistry {
         self.monitor_publisher
     }
 
+    pub fn connection_for_role(&self, role: ClientRole) -> Option<ConnId> {
+        self.meta
+            .iter()
+            .find_map(|(id, meta)| (meta.role == role).then_some(*id))
+    }
+
     pub fn clear_monitor_publisher(&mut self) {
         self.monitor_publisher = None;
     }
@@ -226,7 +232,11 @@ impl ConnectionRegistry {
         }
     }
 
-    pub fn status_and_admin_payload(&self, host: &str, port: u16) -> (BridgeStatus, serde_json::Value) {
+    pub fn status_and_admin_payload(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> (BridgeStatus, serde_json::Value) {
         let status = self.connections_snapshot(host, port);
         let payload = json!({
             "listening": status.listening,

@@ -77,6 +77,7 @@
     <div id="canvas"></div>
     <div id="toolbar">
       <span id="display-name"></span>
+      <select id="app-picker" disabled><option value="">Select an app…</option></select>
       <select id="view-picker" disabled><option value="">Select a view…</option></select>
       <button id="grid-open">Grid…</button>
       <button id="delete" disabled>Delete</button>
@@ -108,11 +109,12 @@
 
       const canvas = document.querySelector("#canvas");
       const deleteButton = document.querySelector("#delete");
+      const appPicker = document.querySelector("#app-picker");
       const viewPicker = document.querySelector("#view-picker");
       const hint = document.querySelector("#hint");
       const gridPopover = document.querySelector("#grid-popover");
       let zones = [];
-      let views = [];
+      let apps = [];
       let assignedViewIds = new Set();
       let selectedId = null;
       let sequence = 1;
@@ -136,10 +138,10 @@
         }
       }
 
-      async function closeView(viewId) {
+      async function closeView(viewId, appId = "monitor") {
         if (!viewId) return;
         try {
-          await invoke("zone_mode_close_view", { viewId });
+          await invoke("zone_mode_close_view", { viewId, appId });
         } catch (error) {
           hint.textContent = `Could not close ${viewId}: ${error}`;
           console.error("Unable to close Monitor view", error);
@@ -153,7 +155,7 @@
         const count = columns * rows;
         const preserveAssignments = zones.length === count;
         const previous = zones.slice();
-        const removedViewIds = preserveAssignments ? [] : previous.map((zone) => zone.viewId).filter(Boolean);
+        const removedViews = preserveAssignments ? [] : previous.filter((zone) => zone.viewId);
         const availableWidth = Math.max(columns, workArea.width - gap * (columns - 1));
         const availableHeight = Math.max(rows, workArea.height - gap * (rows - 1));
         const cellWidth = availableWidth / columns;
@@ -172,6 +174,7 @@
               y,
               width: column === columns - 1 ? workArea.right - x : cellWidth,
               height: row === rows - 1 ? workArea.bottom - y : cellHeight,
+              appId: old?.appId || "monitor",
               viewId: old?.viewId || null,
               viewLabel: old?.viewLabel || null,
               traderPool: old?.traderPool || null,
@@ -184,7 +187,7 @@
         gridPopover.hidden = true;
         render();
         await sync();
-        await Promise.all(removedViewIds.map(closeView));
+        await Promise.all(removedViews.map((zone) => closeView(zone.viewId, zone.appId)));
         await Promise.all(zones.filter((zone) => zone.viewId).map(placeZone));
         hint.textContent = `Applied ${columns} × ${rows} full-screen grid${gap ? ` with ${gap}px gaps` : ""}`;
       }
@@ -245,8 +248,16 @@
           canvas.append(el);
         });
         deleteButton.disabled = !selected();
-        viewPicker.disabled = !selected();
+        appPicker.disabled = !selected();
+        renderAppPicker();
         renderViewPicker();
+      }
+
+      function renderAppPicker() {
+        const selectedZone = selected();
+        appPicker.replaceChildren(new Option("Select an app…", ""));
+        apps.forEach((app) => appPicker.append(new Option(app.label, app.id)));
+        appPicker.value = selectedZone?.appId || "";
       }
 
       function renderViewPicker() {
@@ -256,20 +267,23 @@
           : selectedZone?.traderPool === "watch"
             ? TRADER_WATCH
             : selectedZone?.viewId || null;
-        viewPicker.replaceChildren(new Option("Select a view or slot type…", ""));
-        const traderGroup = document.createElement("optgroup");
-        traderGroup.label = "Trader View slots";
-        traderGroup.append(
-          new Option("Active/User chart slot", TRADER_ACTIVE),
-          new Option("Watchlist chart slot", TRADER_WATCH),
-        );
-        viewPicker.append(traderGroup);
-        const monitorGroup = document.createElement("optgroup");
-        monitorGroup.label = "Monitor views";
-        views
+        const app = apps.find((item) => item.id === selectedZone?.appId);
+        viewPicker.replaceChildren(new Option(app ? "Select a view…" : "Select an app first…", ""));
+        viewPicker.disabled = !selectedZone || !app;
+        if (!app) return;
+        if (app.id === "monitor") {
+          const traderGroup = document.createElement("optgroup");
+          traderGroup.label = "Trader View slots";
+          const activeOption = new Option("Active/User chart slot", TRADER_ACTIVE);
+          if (currentViewId !== TRADER_ACTIVE && assignedViewIds.has(TRADER_ACTIVE)) {
+            activeOption.disabled = true;
+          }
+          traderGroup.append(activeOption, new Option("Watchlist chart slot", TRADER_WATCH));
+          viewPicker.append(traderGroup);
+        }
+        app.views
           .filter((view) => view.id === currentViewId || !assignedViewIds.has(view.id))
-          .forEach((view) => monitorGroup.append(new Option(view.label, view.id)));
-        viewPicker.append(monitorGroup);
+          .forEach((view) => viewPicker.append(new Option(view.label, view.id)));
         viewPicker.value = currentViewId || "";
       }
 
@@ -289,7 +303,7 @@
           selectedId = id;
           const startX = clamp(event.clientX, workArea.left, workArea.right);
           const startY = clamp(event.clientY, workArea.top, workArea.bottom);
-          zones.push({ id, x: startX, y: startY, width: 1, height: 1, viewId: null, viewLabel: null, traderPool: null });
+          zones.push({ id, x: startX, y: startY, width: 1, height: 1, appId: "", viewId: null, viewLabel: null, traderPool: null });
           gesture = { type: "create", startX, startY, id };
         }
         canvas.setPointerCapture(event.pointerId);
@@ -336,11 +350,24 @@
       });
 
       deleteButton.addEventListener("click", async () => {
-        const removedViewId = selected()?.viewId;
+        const removedZone = selected();
         zones = zones.filter((zone) => zone.id !== selectedId);
         selectedId = null;
         render(); await sync();
-        await closeView(removedViewId);
+        await closeView(removedZone?.viewId, removedZone?.appId);
+      });
+      appPicker.addEventListener("change", async () => {
+        const zone = selected();
+        if (!zone) return;
+        const previousViewId = zone.viewId;
+        const previousAppId = zone.appId;
+        zone.appId = appPicker.value;
+        zone.viewId = null;
+        zone.viewLabel = null;
+        zone.traderPool = null;
+        render();
+        await sync();
+        if (previousViewId) await closeView(previousViewId, previousAppId);
       });
       viewPicker.addEventListener("change", async () => {
         const zone = selected();
@@ -348,22 +375,23 @@
         const previousViewId = zone.viewId;
         const selectedValue = viewPicker.value;
         const traderPool = selectedValue === TRADER_ACTIVE ? "active" : selectedValue === TRADER_WATCH ? "watch" : null;
-        const view = traderPool ? null : views.find((item) => item.id === selectedValue);
+        const app = apps.find((item) => item.id === zone.appId);
+        const view = traderPool ? null : app?.views.find((item) => item.id === selectedValue);
         zone.viewId = view?.id || null;
         zone.viewLabel = view?.label || null;
         zone.traderPool = traderPool;
         render();
         await sync();
-        if (previousViewId && previousViewId !== view?.id) await closeView(previousViewId);
+        if (previousViewId && previousViewId !== view?.id) await closeView(previousViewId, zone.appId);
         if (view) await placeZone(zone);
       });
       document.querySelector("#clear").addEventListener("click", async () => {
-        const removedViewIds = zones.map((zone) => zone.viewId).filter(Boolean);
+        const removedViews = zones.filter((zone) => zone.viewId);
         zones = [];
         selectedId = null;
         render();
         await sync();
-        await Promise.all(removedViewIds.map(closeView));
+        await Promise.all(removedViews.map((zone) => closeView(zone.viewId, zone.appId)));
       });
       document.querySelector("#grid-open").addEventListener("click", () => { gridPopover.hidden = !gridPopover.hidden; });
       document.querySelector("#grid-cancel").addEventListener("click", () => { gridPopover.hidden = true; });
@@ -381,9 +409,12 @@
       });
       invoke("zone_mode_initial")
         .then((initial) => {
-          zones = Array.isArray(initial?.zones) ? initial.zones.map(fitZoneToWorkArea) : [];
-          views = Array.isArray(initial?.views) ? initial.views : [];
+          zones = Array.isArray(initial?.zones)
+            ? initial.zones.map((zone) => fitZoneToWorkArea({ appId: "monitor", ...zone }))
+            : [];
+          apps = Array.isArray(initial?.apps) ? initial.apps : [];
           assignedViewIds = new Set(Array.isArray(initial?.assignedViewIds) ? initial.assignedViewIds : []);
+          renderAppPicker();
           renderViewPicker();
           sequence = zones.reduce((next, zone) => {
             const number = Number.parseInt(String(zone.id).replace(/^zone-/, ""), 10);
@@ -411,6 +442,22 @@
           hint.textContent = `${viewId} was closed or docked in Monitor and removed from its Bridge zone`;
           render();
         }
+      }).catch(console.error);
+      listen("zone-mode-trader-pool-unzoned", (event) => {
+        const pool = event.payload?.pool;
+        if (pool !== "active") return;
+        assignedViewIds.delete(TRADER_ACTIVE);
+        let changed = false;
+        zones.forEach((zone) => {
+          if (zone.traderPool === "active") {
+            zone.traderPool = null;
+            changed = true;
+          }
+        });
+        if (changed) {
+          hint.textContent = "Active/User chart moved to Monitor and was removed from its Bridge zone";
+        }
+        render();
       }).catch(console.error);
       listen("zone-mode-assignments-updated", (event) => {
         assignedViewIds = new Set(

@@ -11,8 +11,11 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone)]
 pub enum HubEvent {
     MonitorConnected,
+    GuildsConnected,
     MonitorZonesRequested,
     MonitorViewUnzoned { view_id: String, cause: String },
+    MonitorTraderPoolUnzoned { pool: String },
+    MonitorTraderPoolsPublished,
 }
 
 pub(crate) type ConnWriter = Arc<dyn Fn(ConnId, &[u8]) + Send + Sync>;
@@ -43,7 +46,12 @@ impl HubContext {
         }
     }
 
-    pub(crate) fn send_to_monitor(&self, msg_type: &str, id: &str, payload: Value) -> Result<(), String> {
+    pub(crate) fn send_to_monitor(
+        &self,
+        msg_type: &str,
+        id: &str,
+        payload: Value,
+    ) -> Result<(), String> {
         let publisher = self
             .registry
             .lock()
@@ -52,6 +60,25 @@ impl HubContext {
             .ok_or_else(|| "Arcane Monitor is not connected".to_string())?;
         self.write(
             publisher,
+            &json!({ "schema": 1, "type": msg_type, "id": id, "payload": payload }),
+        );
+        Ok(())
+    }
+
+    pub(crate) fn send_to_guilds(
+        &self,
+        msg_type: &str,
+        id: &str,
+        payload: Value,
+    ) -> Result<(), String> {
+        let connection = self
+            .registry
+            .lock()
+            .ok()
+            .and_then(|registry| registry.connection_for_role(ClientRole::Guilds))
+            .ok_or_else(|| "Arcane Guilds is not connected".to_string())?;
+        self.write(
+            connection,
             &json!({ "schema": 1, "type": msg_type, "id": id, "payload": payload }),
         );
         Ok(())
@@ -124,7 +151,12 @@ impl HubContext {
         if subs.is_empty() {
             return;
         }
-        let Some(payload) = self.state.lock().ok().and_then(|s| s.caster_account_payload()) else {
+        let Some(payload) = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| s.caster_account_payload())
+        else {
             return;
         };
         self.fanout("casterAccount.update", payload, &subs);
@@ -135,7 +167,12 @@ impl HubContext {
         if subs.is_empty() {
             return;
         }
-        let Some(payload) = self.state.lock().ok().and_then(|s| s.caster_journal_payload()) else {
+        let Some(payload) = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| s.caster_journal_payload())
+        else {
             return;
         };
         self.fanout("casterJournal.update", payload, &subs);
@@ -213,10 +250,7 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
     };
 
     let schema = obj.get("schema").and_then(|v| v.as_i64());
-    let msg_type = obj
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let msg_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let id = msg_id(msg);
     let id_ref = id.as_deref().filter(|s| !s.is_empty());
     let payload = obj.get("payload").cloned().unwrap_or(Value::Null);
@@ -224,11 +258,7 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
     if schema != Some(1) {
         ctx.write(
             conn,
-            &HubContext::error_line(
-                id_ref,
-                "unsupported_schema",
-                "Only schema 1 is supported",
-            ),
+            &HubContext::error_line(id_ref, "unsupported_schema", "Only schema 1 is supported"),
         );
         return;
     }
@@ -252,7 +282,11 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
         "monitor.register" => {
             if let Ok(mut reg) = ctx.registry.lock() {
                 reg.set_monitor_publisher(conn);
-                reg.tag(conn, ClientRole::Monitor, id_ref.unwrap_or("monitor-publisher"));
+                reg.tag(
+                    conn,
+                    ClientRole::Monitor,
+                    id_ref.unwrap_or("monitor-publisher"),
+                );
             }
             ctx.broadcast_admin_status();
             (ctx.notify_event)(HubEvent::MonitorConnected);
@@ -267,7 +301,11 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
             );
         }
         "session.request" => {
-            let token = ctx.state.lock().ok().and_then(|s| s.monitor_token().map(str::to_string));
+            let token = ctx
+                .state
+                .lock()
+                .ok()
+                .and_then(|s| s.monitor_token().map(str::to_string));
             if let Some(token) = token {
                 ctx.write(
                     conn,
@@ -362,6 +400,28 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
                 });
             }
         }
+        "monitor.traderPool.unzoned" => {
+            if let Some(pool) = payload
+                .get("pool")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| *id == "active")
+            {
+                if let Ok(mut state) = ctx.state.lock() {
+                    state.set_monitor_active_pool(true);
+                }
+                (ctx.notify_event)(HubEvent::MonitorTraderPoolUnzoned {
+                    pool: pool.to_string(),
+                });
+            }
+        }
+        "monitor.traderPools.publish" => {
+            let active = payload.get("active").and_then(Value::as_bool).unwrap_or(false);
+            if let Ok(mut state) = ctx.state.lock() {
+                state.set_monitor_active_pool(active);
+            }
+            (ctx.notify_event)(HubEvent::MonitorTraderPoolsPublished);
+        }
         "monitor.zones.request" => {
             (ctx.notify_event)(HubEvent::MonitorZonesRequested);
         }
@@ -405,7 +465,12 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
             if let Ok(mut reg) = ctx.registry.lock() {
                 reg.caster_account_subscribers_mut().insert(conn);
             }
-            if let Some(snapshot) = ctx.state.lock().ok().and_then(|s| s.caster_account_payload()) {
+            if let Some(snapshot) = ctx
+                .state
+                .lock()
+                .ok()
+                .and_then(|s| s.caster_account_payload())
+            {
                 ctx.write(
                     conn,
                     &json!({
@@ -453,7 +518,12 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
             if let Ok(mut reg) = ctx.registry.lock() {
                 reg.caster_journal_subscribers_mut().insert(conn);
             }
-            if let Some(snapshot) = ctx.state.lock().ok().and_then(|s| s.caster_journal_payload()) {
+            if let Some(snapshot) = ctx
+                .state
+                .lock()
+                .ok()
+                .and_then(|s| s.caster_journal_payload())
+            {
                 ctx.write(
                     conn,
                     &json!({
@@ -558,6 +628,9 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
                 reg.tag(conn, role, id_ref.unwrap_or("watchlist-subscriber"));
             }
             ctx.broadcast_admin_status();
+            if role == ClientRole::Guilds {
+                (ctx.notify_event)(HubEvent::GuildsConnected);
+            }
             let snapshot = ctx
                 .state
                 .lock()
@@ -576,7 +649,11 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
         "admin.subscribe" => {
             let snapshot = if let Ok(mut reg) = ctx.registry.lock() {
                 reg.admin_subscribers_mut().insert(conn);
-                reg.tag(conn, ClientRole::BridgeApp, id_ref.unwrap_or("bridge-admin"));
+                reg.tag(
+                    conn,
+                    ClientRole::BridgeApp,
+                    id_ref.unwrap_or("bridge-admin"),
+                );
                 reg.admin_payload(&ctx.host, ctx.port)
             } else {
                 json!({})
@@ -688,6 +765,8 @@ const MONITOR_PUBLISH_TYPES: &[&str] = &[
     "vault.publish",
     "monitor.views.publish",
     "monitor.view.unzoned",
+    "monitor.traderPool.unzoned",
+    "monitor.traderPools.publish",
     "monitor.zones.request",
 ];
 
