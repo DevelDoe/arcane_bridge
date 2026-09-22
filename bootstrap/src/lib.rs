@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 const BRIDGE_HOST: &str = "127.0.0.1";
 const DEFAULT_BRIDGE_PORT: u16 = 47991;
 const PRODUCT_NAME: &str = "Arcane Bridge";
+#[cfg(target_os = "macos")]
 const APP_BUNDLE_NAME: &str = "Arcane Bridge.app";
 const BIN_NAME: &str = "arcane-bridge";
 

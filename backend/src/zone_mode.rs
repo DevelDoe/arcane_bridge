@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
-    sync::{LazyLock, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        LazyLock, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tauri::{
@@ -15,6 +18,7 @@ use tauri::{
 use crate::hub_runtime::HubControl;
 
 const ZONE_LABEL_PREFIX: &str = "zone-overlay-";
+static OVERLAY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static RECENT_PLACEMENTS: LazyLock<Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -220,25 +224,34 @@ fn save_layouts(app: &AppHandle, sessions: &HashMap<String, DisplayZones>) -> Re
     fs::write(path, json).map_err(|e| e.to_string())
 }
 
-pub fn unassign_monitor_view(app: &AppHandle, view_id: &str, cause: &str) -> Result<(), String> {
-    if cause == "closed" {
+pub fn unassign_view(
+    app: &AppHandle,
+    app_id: &str,
+    view_id: &str,
+    cause: &str,
+) -> Result<(), String> {
+    if matches!(cause, "closed" | "docked" | "moved" | "resized") {
         let recently_placed = RECENT_PLACEMENTS
             .lock()
             .ok()
             .and_then(|placements| placements.get(view_id).copied())
             .is_some_and(|placed_at| placed_at.elapsed() < Duration::from_secs(2));
         if recently_placed {
-            eprintln!("[arcane-bridge] ignored transient close while placing {view_id}");
+            eprintln!(
+                "[arcane-bridge] ignored transient {cause} while placing {app_id}/{view_id}"
+            );
             return Ok(());
         }
     }
+    let mut changed = false;
     let state = app.state::<ZoneModeState>();
     if let Ok(mut sessions) = state.0.lock() {
         for session in sessions.values_mut() {
             for zone in &mut session.zones {
-                if zone.app_id == "monitor" && zone.view_id.as_deref() == Some(view_id) {
+                if zone.app_id == app_id && zone.view_id.as_deref() == Some(view_id) {
                     zone.view_id = None;
                     zone.view_label = None;
+                    changed = true;
                 }
             }
         }
@@ -247,11 +260,15 @@ pub fn unassign_monitor_view(app: &AppHandle, view_id: &str, cause: &str) -> Res
     let mut saved = load_layouts(app);
     for zones in saved.values_mut() {
         for zone in zones {
-            if zone.app_id == "monitor" && zone.view_id.as_deref() == Some(view_id) {
+            if zone.app_id == app_id && zone.view_id.as_deref() == Some(view_id) {
                 zone.view_id = None;
                 zone.view_label = None;
+                changed = true;
             }
         }
+    }
+    if !changed {
+        return Ok(());
     }
     let path = layouts_path(app)?;
     if let Some(parent) = path.parent() {
@@ -265,7 +282,7 @@ pub fn unassign_monitor_view(app: &AppHandle, view_id: &str, cause: &str) -> Res
 
     app.emit(
         "zone-mode-view-unzoned",
-        serde_json::json!({ "viewId": view_id }),
+        serde_json::json!({ "appId": app_id, "viewId": view_id, "cause": cause }),
     )
     .map_err(|e| e.to_string())
 }
@@ -416,6 +433,9 @@ pub fn hydrate_guilds_views(app: &AppHandle) -> Result<(), String> {
             let Some(view_id) = zone.view_id.as_deref() else {
                 continue;
             };
+            if view_id == "sidebar" {
+                continue;
+            }
             let request_id = format!("guilds-zone-hydrate-{view_id}-{count}");
             hub.place_guilds_view(
                 &request_id,
@@ -437,14 +457,115 @@ pub fn hydrate_guilds_views(app: &AppHandle) -> Result<(), String> {
 }
 
 fn close_overlays(app: &AppHandle) {
-    for (_label, window) in app.webview_windows() {
-        if window.label().starts_with(ZONE_LABEL_PREFIX) {
-            let _ = window.close();
-        }
+    let overlays: Vec<_> = app
+        .webview_windows()
+        .into_values()
+        .filter(|window| window.label().starts_with(ZONE_LABEL_PREFIX))
+        .collect();
+    if overlays.is_empty() {
+        return;
+    }
+
+    // wry 0.55 nulls the WebView2 controller inside WM_DESTROY, then still
+    // handles WM_SETFOCUS / WM_SIZE by dereferencing it. Closing the focused
+    // overlay delivers those messages and aborts the process.
+    for window in &overlays {
+        disarm_webview_teardown(window);
+    }
+    for window in &overlays {
+        let _ = window.hide();
+    }
+    release_keyboard_focus();
+    eprintln!(
+        "[arcane-bridge] Zone Mode: closing {} overlay(s)",
+        overlays.len()
+    );
+    for window in overlays {
+        let _ = window.close();
     }
 }
 
+#[cfg(windows)]
+fn disarm_webview_teardown(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let installed = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(zone_close_guard_proc),
+            ZONE_CLOSE_GUARD_SUBCLASS_ID,
+            0,
+        )
+    };
+    if !installed.as_bool() {
+        eprintln!("[arcane-bridge] Zone Mode: failed to guard WebView2 teardown");
+    }
+}
+
+#[cfg(not(windows))]
+fn disarm_webview_teardown(_window: &tauri::WebviewWindow) {}
+
+#[cfg(windows)]
+fn release_keyboard_focus() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    unsafe {
+        let _ = SetFocus(None);
+    }
+}
+
+#[cfg(not(windows))]
+fn release_keyboard_focus() {}
+
+#[cfg(windows)]
+const ZONE_CLOSE_GUARD_SUBCLASS_ID: usize = 0xAB21;
+
+#[cfg(windows)]
+unsafe extern "system" fn zone_close_guard_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _uidsubclass: usize,
+    _dwrefdata: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WM_ENTERSIZEMOVE, WM_MOVE, WM_MOVING, WM_SETFOCUS, WM_SIZE,
+    };
+
+    match msg {
+        WM_SETFOCUS | WM_ENTERSIZEMOVE | WM_SIZE | WM_MOVE | WM_MOVING => LRESULT(0),
+        _ => DefSubclassProc(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// WebView2 panics if the overlay is destroyed while still inside its own invoke.
+fn close_overlays_after_ipc(app: &AppHandle) {
+    let generation = OVERLAY_GENERATION.load(Ordering::SeqCst);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        let closer = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if OVERLAY_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            close_overlays(&closer);
+        });
+    });
+}
+
+fn publish_zone_apps(app: &AppHandle) {
+    let apps = zone_apps(&app.state::<HubControl>());
+    let _ = app.emit("zone-mode-apps-updated", apps);
+}
+
 pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
+    OVERLAY_GENERATION.fetch_add(1, Ordering::SeqCst);
     close_overlays(app);
 
     let monitors = app.available_monitors().map_err(|e| e.to_string())?;
@@ -561,6 +682,7 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
         eprintln!("[arcane-bridge] Zone Mode: overlay {label} ready");
     }
 
+    publish_zone_apps(app);
     Ok(())
 }
 
@@ -583,10 +705,6 @@ pub fn zone_apps(hub: &HubControl) -> Vec<ZoneApp> {
             id: "guilds".into(),
             label: "Arcane Guilds".into(),
             views: vec![
-                MonitorView {
-                    id: "sidebar".into(),
-                    label: "Navigation".into(),
-                },
                 MonitorView {
                     id: "chat".into(),
                     label: "Chat".into(),
@@ -670,6 +788,9 @@ pub fn zone_mode_place(
     state: tauri::State<'_, ZoneModeState>,
     hub: tauri::State<'_, HubControl>,
 ) -> Result<(), String> {
+    if view_id == "sidebar" {
+        return Err("Navigation cannot be zoned".to_string());
+    }
     let sessions = state.0.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get(window.label())
@@ -727,7 +848,7 @@ pub fn zone_mode_cancel(app: AppHandle, state: tauri::State<'_, ZoneModeState>) 
     if let Ok(mut sessions) = state.0.lock() {
         sessions.clear();
     }
-    close_overlays(&app);
+    close_overlays_after_ipc(&app);
 }
 
 #[tauri::command]
@@ -752,6 +873,6 @@ pub fn zone_mode_finish(
     drop(sessions);
 
     eprintln!("[arcane-bridge] Zone Mode finished: {placed:?}");
-    close_overlays(&app);
+    close_overlays_after_ipc(&app);
     Ok(placed)
 }

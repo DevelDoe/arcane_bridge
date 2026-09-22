@@ -413,8 +413,11 @@
       });
       let receivedLiveApps = false;
       listen("zone-mode-apps-updated", (event) => {
-        receivedLiveApps = true;
-        apps = Array.isArray(event.payload) ? event.payload : [];
+        const next = Array.isArray(event.payload) ? event.payload : null;
+        if (!next) return;
+        if (next.length === 0 && apps.length > 0) return;
+        receivedLiveApps = next.length > 0;
+        apps = next;
         renderAppPicker();
         renderViewPicker();
       })
@@ -423,7 +426,9 @@
           zones = Array.isArray(initial?.zones)
             ? initial.zones.map((zone) => fitZoneToWorkArea({ appId: "monitor", ...zone }))
             : [];
-          if (!receivedLiveApps) apps = Array.isArray(initial?.apps) ? initial.apps : [];
+          const initialApps = Array.isArray(initial?.apps) ? initial.apps : [];
+          if (initialApps.length) apps = initialApps;
+          else if (!receivedLiveApps) apps = initialApps;
           assignedViewIds = new Set(Array.isArray(initial?.assignedViewIds) ? initial.assignedViewIds : []);
           renderAppPicker();
           renderViewPicker();

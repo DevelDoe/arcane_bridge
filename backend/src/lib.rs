@@ -166,10 +166,15 @@ fn spawn_hub_event_listener(app: AppHandle, rx: Receiver<HubEvent>) {
                     let apps = zone_mode::zone_apps(&handle.state::<hub_runtime::HubControl>());
                     let _ = handle.emit("zone-mode-apps-updated", apps);
                 }
-                HubEvent::MonitorViewUnzoned { view_id, cause } => {
-                    if let Err(error) = zone_mode::unassign_monitor_view(&handle, &view_id, &cause)
+                HubEvent::ViewUnzoned {
+                    app_id,
+                    view_id,
+                    cause,
+                } => {
+                    if let Err(error) =
+                        zone_mode::unassign_view(&handle, &app_id, &view_id, &cause)
                     {
-                        eprintln!("[arcane-bridge] unassign Monitor view: {error}");
+                        eprintln!("[arcane-bridge] unassign {app_id} view: {error}");
                     }
                 }
                 HubEvent::MonitorTraderPoolUnzoned { pool } => {

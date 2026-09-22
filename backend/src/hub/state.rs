@@ -53,9 +53,7 @@ fn is_invalid_symbol_placeholder(s: &str) -> bool {
 }
 
 fn normalize_symbol(raw: Option<&Value>) -> Option<String> {
-    let Some(v) = raw else {
-        return None;
-    };
+    let v = raw?;
     // JSON null must not become the string "NULL" (serde_json Null Display is "null").
     let t = match v {
         Value::Null => return None,

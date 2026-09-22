@@ -14,7 +14,11 @@ pub enum HubEvent {
     GuildsConnected,
     MonitorViewsChanged,
     MonitorZonesRequested,
-    MonitorViewUnzoned { view_id: String, cause: String },
+    ViewUnzoned {
+        app_id: String,
+        view_id: String,
+        cause: String,
+    },
     MonitorTraderPoolUnzoned { pool: String },
     MonitorTraderPoolsPublished,
 }
@@ -242,6 +246,26 @@ fn msg_id(msg: &Value) -> Option<String> {
     })
 }
 
+fn notify_view_unzoned(ctx: &HubContext, app_id: &str, payload: &Value) {
+    let Some(view_id) = payload
+        .get("viewId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    (ctx.notify_event)(HubEvent::ViewUnzoned {
+        app_id: app_id.to_string(),
+        view_id: view_id.to_string(),
+        cause: payload
+            .get("cause")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+    });
+}
+
 pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
     let Some(obj) = msg.as_object() else {
         ctx.write(
@@ -386,23 +410,8 @@ pub fn handle_message(ctx: &HubContext, conn: ConnId, msg: &Value) {
                 }),
             );
         }
-        "monitor.view.unzoned" => {
-            if let Some(view_id) = payload
-                .get("viewId")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                (ctx.notify_event)(HubEvent::MonitorViewUnzoned {
-                    view_id: view_id.to_string(),
-                    cause: payload
-                        .get("cause")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown")
-                        .to_string(),
-                });
-            }
-        }
+        "monitor.view.unzoned" => notify_view_unzoned(ctx, "monitor", &payload),
+        "guilds.view.unzoned" => notify_view_unzoned(ctx, "guilds", &payload),
         "monitor.traderPool.unzoned" => {
             if let Some(pool) = payload
                 .get("pool")

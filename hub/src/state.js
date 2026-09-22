@@ -92,10 +92,6 @@ export function mergeCasterAccountPublish(payload) {
     state.casterAccount = { ...payload };
 }
 
-export function clearCasterAccount() {
-    state.casterAccount = null;
-}
-
 export function casterJournalPayload() {
     const j = state.casterJournal;
     if (!j || typeof j !== "object") {
@@ -109,10 +105,6 @@ export function mergeCasterJournalPublish(payload) {
     state.casterJournal = { ...payload };
 }
 
-export function clearCasterJournal() {
-    state.casterJournal = null;
-}
-
 export function guildsFeedPayload() {
     const g = state.guildsFeed;
     if (!g || typeof g !== "object") {
@@ -124,10 +116,6 @@ export function guildsFeedPayload() {
 export function mergeGuildsFeedPublish(payload) {
     if (!payload || typeof payload !== "object") return;
     state.guildsFeed = { ...payload };
-}
-
-export function clearGuildsFeed() {
-    state.guildsFeed = null;
 }
 
 export function mergeWatchlistPublish(payload) {
