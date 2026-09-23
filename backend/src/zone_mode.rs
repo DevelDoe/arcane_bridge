@@ -615,6 +615,11 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
         let work_top = work_area.position.y as f64 / scale - origin_y;
         let work_width = work_area.size.width as f64 / scale;
         let work_height = work_area.size.height as f64 / scale;
+        // macOS zoning now uses the top edge of the display. Reclaim only
+        // the menu-bar inset, preserving the work area's Dock reservation.
+        #[cfg(target_os = "macos")]
+        let (work_top, work_height) = (0.0, work_height + work_top);
+
         let persistence_key = monitor_layout_key(&monitor);
         let zones = saved_layouts
             .get(&persistence_key)
