@@ -612,13 +612,17 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
         let height = size.height as f64 / scale;
         let work_area = monitor.work_area();
         let work_left = work_area.position.x as f64 / scale - origin_x;
-        let work_top = work_area.position.y as f64 / scale - origin_y;
+        let mut work_top = work_area.position.y as f64 / scale - origin_y;
         let work_width = work_area.size.width as f64 / scale;
         let work_height = work_area.size.height as f64 / scale;
-        // macOS zoning now uses the top edge of the display. Reclaim only
-        // the menu-bar inset, preserving the work area's Dock reservation.
+        // Keep the overlay on the display top. macOS still includes the menu
+        // bar in the full display height, which pushes the bottom off screen.
+        let mut overlay_size = *size;
         #[cfg(target_os = "macos")]
-        let (work_top, work_height) = (0.0, work_height + work_top);
+        {
+            work_top = 0.0;
+            overlay_size.height = work_area.size.height;
+        }
 
         let persistence_key = monitor_layout_key(&monitor);
         let zones = saved_layouts
@@ -640,7 +644,7 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
         let url = format!(
             "zone.html?display={display_id}&x={origin_x}&y={origin_y}&width={width}&height={height}&workLeft={work_left}&workTop={work_top}&workWidth={work_width}&workHeight={work_height}"
         );
-        overlays.push((index, label, display_id, url, *position, *size));
+        overlays.push((index, label, display_id, url, *position, overlay_size));
     }
 
     // WebView2 creation pumps Windows messages, including IPC from earlier
