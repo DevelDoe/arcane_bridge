@@ -3,6 +3,7 @@ mod bridge_admin;
 mod console_window;
 mod hub;
 mod hub_runtime;
+mod linux_display;
 mod shell_visibility;
 mod updates;
 mod zone_mode;

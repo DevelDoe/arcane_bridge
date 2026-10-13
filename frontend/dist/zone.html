@@ -188,7 +188,6 @@
         render();
         await sync();
         await Promise.all(removedViews.map((zone) => closeView(zone.viewId, zone.appId)));
-        await Promise.all(zones.filter((zone) => zone.viewId).map(placeZone));
         hint.textContent = `Applied ${columns} × ${rows} full-screen grid${gap ? ` with ${gap}px gaps` : ""}`;
       }
 
@@ -350,7 +349,6 @@
         gesture = null;
         render();
         sync();
-        if (zone && zones.includes(zone)) placeZone(zone);
       });
 
       deleteButton.addEventListener("click", async () => {
@@ -387,7 +385,6 @@
         render();
         await sync();
         if (previousViewId && previousViewId !== view?.id) await closeView(previousViewId, zone.appId);
-        if (view) await placeZone(zone);
       });
       document.querySelector("#clear").addEventListener("click", async () => {
         const removedViews = zones.filter((zone) => zone.viewId);

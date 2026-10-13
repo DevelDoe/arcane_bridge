@@ -10,14 +10,65 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
-    WebviewWindowBuilder,
-};
+#[cfg(not(target_os = "linux"))]
+use tauri::{PhysicalPosition, PhysicalSize, Position, Size};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::hub_runtime::HubControl;
 
 const ZONE_LABEL_PREFIX: &str = "zone-overlay-";
+
+#[cfg(target_os = "linux")]
+fn place_linux_overlay(
+    overlay: &tauri::WebviewWindow,
+    monitor_index: i32,
+    _width: f64,
+    _height: f64,
+) -> Result<(), String> {
+    use gtk::gdk::prelude::MonitorExt;
+    use gtk::prelude::{GtkWindowExt, WidgetExt};
+
+    // Wayland ignores a normal move, so fullscreen is what puts the overlay on
+    // this monitor. The window must already be the monitor size, otherwise
+    // GNOME centers an 800x600 view on a black fullscreen sheet.
+    let window = overlay
+        .gtk_window()
+        .map_err(|error| format!("Linux window handle: {error}"))?;
+    let screen = WidgetExt::screen(&window)
+        .ok_or_else(|| "No screen for Zone Mode overlay".to_string())?;
+    let gdk_monitor = screen
+        .display()
+        .monitor(monitor_index)
+        .ok_or_else(|| format!("No GTK monitor at index {monitor_index}"))?;
+    let geometry = gdk_monitor.geometry();
+    window.resize(geometry.width(), geometry.height());
+    window.fullscreen_on_monitor(&screen, monitor_index);
+    overlay
+        .show()
+        .map_err(|error| format!("show Zone Mode overlay: {error}"))?;
+    window.resize(geometry.width(), geometry.height());
+    eprintln!(
+        "[arcane-bridge] Zone Mode: monitor {monitor_index} fullscreen {}x{}",
+        geometry.width(),
+        geometry.height()
+    );
+    Ok(())
+}
+
+enum ZoneOverlayBounds {
+    #[cfg(target_os = "linux")]
+    Logical {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
+    #[cfg(not(target_os = "linux"))]
+    Physical {
+        position: PhysicalPosition<i32>,
+        size: PhysicalSize<u32>,
+    },
+}
 static OVERLAY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static RECENT_PLACEMENTS: LazyLock<Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -44,7 +95,10 @@ fn default_app_id() -> String {
     "monitor".to_string()
 }
 
-fn assigned_zone_ids(sessions: &HashMap<String, DisplayZones>, monitor_claimed_active: bool) -> Vec<String> {
+fn assigned_zone_ids(
+    sessions: &HashMap<String, DisplayZones>,
+    monitor_claimed_active: bool,
+) -> Vec<String> {
     let mut ids: Vec<String> = sessions
         .values()
         .flat_map(|session| session.zones.iter())
@@ -60,7 +114,10 @@ fn assigned_zone_ids(sessions: &HashMap<String, DisplayZones>, monitor_claimed_a
     ids
 }
 
-fn take_exclusive_active(sessions: &mut HashMap<String, DisplayZones>, current_label: &str) -> bool {
+fn take_exclusive_active(
+    sessions: &mut HashMap<String, DisplayZones>,
+    current_label: &str,
+) -> bool {
     let current_has_active = sessions
         .get(current_label)
         .map(|session| {
@@ -237,9 +294,7 @@ pub fn unassign_view(
             .and_then(|placements| placements.get(view_id).copied())
             .is_some_and(|placed_at| placed_at.elapsed() < Duration::from_secs(2));
         if recently_placed {
-            eprintln!(
-                "[arcane-bridge] ignored transient {cause} while placing {app_id}/{view_id}"
-            );
+            eprintln!("[arcane-bridge] ignored transient {cause} while placing {app_id}/{view_id}");
             return Ok(());
         }
     }
@@ -307,7 +362,8 @@ pub fn unassign_monitor_trader_pool(app: &AppHandle, pool: &str) -> Result<(), S
     let hub = app.state::<HubControl>();
     if let Ok(mut sessions) = state.0.lock() {
         clear_trader_pool(&mut sessions, pool);
-        let _ = hub.configure_monitor_trader_pools("zone-pools-unassign", trader_pool_payload(&sessions));
+        let _ = hub
+            .configure_monitor_trader_pools("zone-pools-unassign", trader_pool_payload(&sessions));
         let assigned_view_ids = assigned_zone_ids(&sessions, true);
         app.emit(
             "zone-mode-assignments-updated",
@@ -577,14 +633,17 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
         let position = monitor.position();
         let size = monitor.size();
         let work_area = monitor.work_area();
+        let pixels = crate::linux_display::monitor_pixels(monitor);
         eprintln!(
-            "[arcane-bridge] Zone Mode monitor[{index}]: name={:?} pos={}x{} size={}x{} scale={} work_pos={}x{} work_size={}x{}",
+            "[arcane-bridge] Zone Mode monitor[{index}]: name={:?} pos={}x{} size={}x{} scale={} logical={:.0}x{:.0} work_pos={}x{} work_size={}x{}",
             monitor.name(),
             position.x,
             position.y,
             size.width,
             size.height,
             monitor.scale_factor(),
+            pixels.width,
+            pixels.height,
             work_area.position.x,
             work_area.position.y,
             work_area.size.width,
@@ -603,26 +662,63 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
     for (index, monitor) in monitors.into_iter().enumerate() {
         let label = format!("{ZONE_LABEL_PREFIX}{index}");
         let display_id = format!("display-{index}");
-        let scale = monitor.scale_factor();
+        #[cfg(not(target_os = "linux"))]
         let position = monitor.position();
-        let size = monitor.size();
-        let origin_x = position.x as f64 / scale;
-        let origin_y = position.y as f64 / scale;
-        let width = size.width as f64 / scale;
-        let height = size.height as f64 / scale;
-        let work_area = monitor.work_area();
-        let work_left = work_area.position.x as f64 / scale - origin_x;
-        let mut work_top = work_area.position.y as f64 / scale - origin_y;
-        let work_width = work_area.size.width as f64 / scale;
-        let work_height = work_area.size.height as f64 / scale;
+        let pixels = crate::linux_display::monitor_pixels(&monitor);
+        let origin_x = pixels.x;
+        let origin_y = pixels.y;
+        let width = pixels.width;
+        let height = pixels.height;
         // Keep the overlay on the display top. macOS still includes the menu
         // bar in the full display height, which pushes the bottom off screen.
-        let mut overlay_size = *size;
+        #[cfg(not(target_os = "linux"))]
+        let work_left = pixels.work_x - origin_x;
+        #[cfg(not(target_os = "linux"))]
+        let work_width = pixels.work_width;
         #[cfg(target_os = "macos")]
-        {
-            work_top = 0.0;
-            overlay_size.height = work_area.size.height;
-        }
+        let work_top = 0.0;
+        #[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
+        let work_top = pixels.work_y - origin_y;
+        #[cfg(not(target_os = "linux"))]
+        let work_height = pixels.work_height;
+        #[cfg(target_os = "linux")]
+        let (work_left, work_top, work_width, work_height) = {
+            let area = crate::linux_display::zone_work_area(
+                &pixels,
+                monitor.name().as_deref().map(String::as_str),
+            );
+            eprintln!(
+                "[arcane-bridge] Zone Mode: {display_id} drawable {:.0},{:.0} {:.0}x{:.0}",
+                area.0, area.1, area.2, area.3
+            );
+            area
+        };
+        #[cfg(target_os = "macos")]
+        let overlay_size = {
+            let mut overlay_size = PhysicalSize::new(
+                (width * pixels.window_scale).round().max(1.0) as u32,
+                (height * pixels.window_scale).round().max(1.0) as u32,
+            );
+            overlay_size.height = monitor.work_area().size.height;
+            overlay_size
+        };
+        #[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
+        let overlay_size = PhysicalSize::new(
+            (width * pixels.window_scale).round().max(1.0) as u32,
+            (height * pixels.window_scale).round().max(1.0) as u32,
+        );
+        #[cfg(target_os = "linux")]
+        let bounds = ZoneOverlayBounds::Logical {
+            x: origin_x,
+            y: origin_y,
+            width,
+            height,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let bounds = ZoneOverlayBounds::Physical {
+            position: *position,
+            size: overlay_size,
+        };
 
         let persistence_key = monitor_layout_key(&monitor);
         let zones = saved_layouts
@@ -644,7 +740,7 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
         let url = format!(
             "zone.html?display={display_id}&x={origin_x}&y={origin_y}&width={width}&height={height}&workLeft={work_left}&workTop={work_top}&workWidth={work_width}&workHeight={work_height}"
         );
-        overlays.push((index, label, display_id, url, *position, overlay_size));
+        overlays.push((index, label, display_id, url, bounds));
     }
 
     // WebView2 creation pumps Windows messages, including IPC from earlier
@@ -652,13 +748,10 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
     // any window so zone_mode_initial cannot deadlock on this thread.
     *state.0.lock().map_err(|e| e.to_string())? = sessions;
 
-    for (index, label, display_id, url, position, size) in overlays {
-        eprintln!(
-            "[arcane-bridge] Zone Mode: creating overlay {label} for {display_id} at physical {}x{} {}x{}",
-            position.x, position.y, size.width, size.height
-        );
-        // Initialize hidden at the primary origin, then apply the target display's
-        // physical bounds before showing the transparent overlay.
+    for (index, label, display_id, url, bounds) in overlays {
+        // Initialize hidden at the primary origin, then apply this display's bounds
+        // before showing the transparent overlay. Linux uses logical pixels because
+        // the physical size is already scaled and would make the overlay too big.
         let overlay = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
             .title("Arcane Bridge Zone Mode")
             .decorations(false)
@@ -673,15 +766,39 @@ pub fn start_zone_mode(app: &AppHandle) -> Result<(), String> {
             .focused(false)
             .build()
             .map_err(|e| format!("create Zone Mode overlay for {display_id}: {e}"))?;
-        overlay
-            .set_position(Position::Physical(PhysicalPosition::new(
-                position.x,
-                position.y,
-            )))
-            .map_err(|e| format!("position Zone Mode overlay for {display_id}: {e}"))?;
-        overlay
-            .set_size(Size::Physical(PhysicalSize::new(size.width, size.height)))
-            .map_err(|e| format!("size Zone Mode overlay for {display_id}: {e}"))?;
+        match bounds {
+            #[cfg(target_os = "linux")]
+            ZoneOverlayBounds::Logical {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                eprintln!(
+                    "[arcane-bridge] Zone Mode: creating overlay {label} for {display_id} fullscreen on monitor {index} (logical {x:.0}x{y:.0} {width:.0}x{height:.0})"
+                );
+                // Wayland ignores set_position, so both overlays were opening on
+                // the screen that currently has focus. Fullscreen-on-monitor is
+                // the placement GNOME actually applies.
+                place_linux_overlay(&overlay, index as i32, width, height)?;
+            }
+            #[cfg(not(target_os = "linux"))]
+            ZoneOverlayBounds::Physical { position, size } => {
+                eprintln!(
+                    "[arcane-bridge] Zone Mode: creating overlay {label} for {display_id} at physical {}x{} {}x{}",
+                    position.x, position.y, size.width, size.height
+                );
+                overlay
+                    .set_position(Position::Physical(PhysicalPosition::new(
+                        position.x, position.y,
+                    )))
+                    .map_err(|e| format!("position Zone Mode overlay for {display_id}: {e}"))?;
+                overlay
+                    .set_size(Size::Physical(PhysicalSize::new(size.width, size.height)))
+                    .map_err(|e| format!("size Zone Mode overlay for {display_id}: {e}"))?;
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
         overlay
             .show()
             .map_err(|e| format!("show Zone Mode overlay for {display_id}: {e}"))?;
